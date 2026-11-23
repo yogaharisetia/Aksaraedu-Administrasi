@@ -1396,32 +1396,99 @@
     const tahunId = getActiveTahun();
     const kelasId = getActiveKelas();
     const siswaList = state.Siswa.filter((s) => s.kelas_id === kelasId);
+    const absensiKelas = state.Absensi.filter((a) => a.tahun_id === tahunId && a.kelas_id === kelasId);
 
     const summaryRows = siswaList.map((s) => {
+      const absSiswa = absensiKelas.filter((a) => a.siswa_id === s.siswa_id);
+      const hadir = absSiswa.filter((a) => a.status === 'Hadir').length;
+      const sakit = absSiswa.filter((a) => a.status === 'Sakit').length;
+      const izin = absSiswa.filter((a) => a.status === 'Izin').length;
+      const alpa = absSiswa.filter((a) => a.status === 'Alpa').length;
+      const telat = absSiswa.filter((a) => a.status === 'Terlambat').length;
+
       const poinRows = state.Poin_Siswa.filter((p) => p.tahun_id === tahunId && p.kelas_id === kelasId && p.siswa_id === s.siswa_id);
       const totalPoin = poinRows.reduce((sum, p) => sum + (p.jenis_poin === 'Negatif' ? -Math.abs(Number(p.poin) || 0) : Math.abs(Number(p.poin) || 0)), 0);
       const bkCount = state.BK_Jurnal.filter((b) => b.tahun_id === tahunId && b.kelas_id === kelasId && b.siswa_id === s.siswa_id).length;
       const ekskulCount = state.Nilai_Ekstrakurikuler.filter((e) => e.tahun_id === tahunId && e.kelas_id === kelasId && e.siswa_id === s.siswa_id).length;
-      return { nis: s.nis, nama: s.nama_lengkap, ekskul_count: ekskulCount, bk_count: bkCount, total_poin: totalPoin };
+      return {
+        nis: s.nis, nama: s.nama_lengkap,
+        hadir, sakit, izin, alpa, telat,
+        ekskul_count: ekskulCount, bk_count: bkCount, total_poin: totalPoin
+      };
     });
 
+    const absensiLogRows = absensiKelas.map((a) => ({
+      tanggal: a.tanggal,
+      nis: state.Siswa.find((s) => s.siswa_id === a.siswa_id)?.nis || '-',
+      nama: getSiswaName(a.siswa_id),
+      status: a.status,
+      keterangan: a.keterangan || '-'
+    }));
+
     return `
-      ${renderPrintHeader('Rekap Laporan', `Kelas ${getKelasName(kelasId)}`)}
+      ${renderPrintHeader('Rekap Absensi & Laporan', `Kelas ${getKelasName(kelasId)}`)}
       <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
-        <h6 class="fw-bold mb-0">Rekap Laporan Kelas ${escapeHtml(getKelasName(kelasId))}</h6>
-        ${renderExportToolbar('Rekap Laporan', `Rekap_${getKelasName(kelasId)}`, summaryRows, [
+        <h6 class="fw-bold mb-0">Rekap Absensi & Laporan Kelas ${escapeHtml(getKelasName(kelasId))}</h6>
+        ${renderExportToolbar('Rekap Absensi & Laporan', `Rekap_Absensi_${getKelasName(kelasId)}`, summaryRows, [
           { key: 'nis', label: 'NIS' }, { key: 'nama', label: 'Nama Siswa' },
+          { key: 'hadir', label: 'Hadir' }, { key: 'sakit', label: 'Sakit' },
+          { key: 'izin', label: 'Izin' }, { key: 'alpa', label: 'Alpa' }, { key: 'telat', label: 'Telat' },
           { key: 'ekskul_count', label: 'Jumlah Ekskul' }, { key: 'bk_count', label: 'Catatan BK' }, { key: 'total_poin', label: 'Saldo Poin' }
         ])}
       </div>
+
       <div class="card-panel">
+        <h6 class="fw-bold mb-3">Rekap Kehadiran Siswa (Akumulasi Tahun Ajaran Aktif)</h6>
         <div class="table-responsive">
-          <table class="table table-bordered table-sm mb-0">
-            <thead class="table-light"><tr><th>NIS</th><th>Nama Siswa</th><th>Jumlah Ekskul</th><th>Catatan BK</th><th>Saldo Poin</th></tr></thead>
+          <table class="table table-bordered table-sm align-middle mb-0">
+            <thead class="table-light">
+              <tr>
+                <th>NIS</th><th>Nama Siswa</th>
+                <th class="text-center text-success">Hadir</th>
+                <th class="text-center text-info">Sakit</th>
+                <th class="text-center text-warning">Izin</th>
+                <th class="text-center text-danger">Alpa</th>
+                <th class="text-center text-secondary">Telat</th>
+                <th class="text-center">Ekskul</th>
+                <th class="text-center">BK</th>
+                <th class="text-center">Saldo Poin</th>
+              </tr>
+            </thead>
             <tbody>
               ${summaryRows.length ? summaryRows.map((r) => `
-                <tr><td>${escapeHtml(r.nis)}</td><td class="fw-semibold">${escapeHtml(r.nama)}</td><td>${r.ekskul_count}</td><td>${r.bk_count}</td><td class="fw-bold">${r.total_poin}</td></tr>
-              `).join('') : '<tr><td colspan="5" class="text-center text-muted">Belum ada data rekap</td></tr>'}
+                <tr>
+                  <td>${escapeHtml(r.nis)}</td>
+                  <td class="fw-semibold">${escapeHtml(r.nama)}</td>
+                  <td class="text-center fw-bold text-success">${r.hadir}</td>
+                  <td class="text-center fw-bold text-info">${r.sakit}</td>
+                  <td class="text-center fw-bold text-warning">${r.izin}</td>
+                  <td class="text-center fw-bold text-danger">${r.alpa}</td>
+                  <td class="text-center">${r.telat}</td>
+                  <td class="text-center">${r.ekskul_count}</td>
+                  <td class="text-center">${r.bk_count}</td>
+                  <td class="text-center fw-bold">${r.total_poin}</td>
+                </tr>
+              `).join('') : '<tr><td colspan="10" class="text-center text-muted">Belum ada data rekap</td></tr>'}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="card-panel">
+        <h6 class="fw-bold mb-3">Riwayat Detail Absensi Harian (${absensiLogRows.length} catatan)</h6>
+        <div class="table-responsive">
+          <table class="table table-bordered table-sm mb-0">
+            <thead class="table-light"><tr><th>Tanggal</th><th>NIS</th><th>Nama Siswa</th><th>Status</th><th>Keterangan</th></tr></thead>
+            <tbody>
+              ${absensiLogRows.length ? absensiLogRows.map((a) => `
+                <tr>
+                  <td>${escapeHtml(a.tanggal)}</td>
+                  <td>${escapeHtml(a.nis)}</td>
+                  <td class="fw-semibold">${escapeHtml(a.nama)}</td>
+                  <td><span class="badge bg-secondary">${escapeHtml(a.status)}</span></td>
+                  <td>${escapeHtml(a.keterangan)}</td>
+                </tr>
+              `).join('') : '<tr><td colspan="5" class="text-center text-muted">Belum ada catatan absensi</td></tr>'}
             </tbody>
           </table>
         </div>
