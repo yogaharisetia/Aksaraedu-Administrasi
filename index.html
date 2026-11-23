@@ -692,54 +692,175 @@
     const kelasId = getActiveKelas();
     const siswaList = state.Siswa.filter((s) => s.kelas_id === kelasId);
     const today = new Date().toISOString().slice(0, 10);
+    const selectedDate = window.__SELECTED_ABSENSI_DATE__ || today;
+    const searchQuery = (window.__ABSENSI_SEARCH__ || '').toLowerCase();
+
     const rows = state.Absensi.filter((a) => a.tahun_id === tahunId && a.kelas_id === kelasId);
+    const rowsByDate = rows.filter((a) => a.tanggal === selectedDate);
+    const statusMap = {};
+    rowsByDate.forEach((r) => { statusMap[r.siswa_id] = r; });
+
+    const countStatus = (st) => siswaList.filter((s) => (statusMap[s.siswa_id]?.status || 'Hadir') === st).length;
+    const jmlHadir = countStatus('Hadir');
+    const jmlSakit = countStatus('Sakit');
+    const jmlIzin = countStatus('Izin');
+    const jmlAlpa = countStatus('Alpa');
+
+    const filteredSiswa = siswaList.filter((s) =>
+      !searchQuery ||
+      String(s.nama_lengkap || '').toLowerCase().includes(searchQuery) ||
+      String(s.nis || '').toLowerCase().includes(searchQuery) ||
+      String(s.nisn || '').toLowerCase().includes(searchQuery)
+    );
+
+    const exportData = siswaList.map((s, idx) => {
+      const rec = statusMap[s.siswa_id];
+      return {
+        no: idx + 1,
+        tanggal: selectedDate,
+        nis: s.nis,
+        siswa: s.nama_lengkap,
+        status: rec?.status || 'Hadir',
+        keterangan: rec?.keterangan || ''
+      };
+    });
 
     return `
-      ${renderPrintHeader('Absensi Siswa', `Kelas ${getKelasName(kelasId)}`)}
+      ${renderPrintHeader('Daftar Hadir Siswa', `Kelas ${getKelasName(kelasId)} — Tanggal ${selectedDate}`)}
       <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
-        <h6 class="fw-bold mb-0">Absensi Siswa — Kelas ${escapeHtml(getKelasName(kelasId))}</h6>
-        ${renderExportToolbar('Absensi Siswa', `Absensi_${getKelasName(kelasId)}`, rows.map((r) => ({
-          tanggal: r.tanggal, siswa: getSiswaName(r.siswa_id), status: r.status, keterangan: r.keterangan
-        })), [
-          { key: 'tanggal', label: 'Tanggal' }, { key: 'siswa', label: 'Nama Siswa' },
+        <div>
+          <h6 class="fw-bold mb-0">Daftar Hadir Siswa — Kelas ${escapeHtml(getKelasName(kelasId))}</h6>
+          <small class="text-muted">Absensi massal seluruh siswa sekaligus dalam satu tabel</small>
+        </div>
+        ${renderExportToolbar('Daftar Hadir Siswa', `Absensi_${getKelasName(kelasId)}_${selectedDate}`, exportData, [
+          { key: 'no', label: 'No' }, { key: 'tanggal', label: 'Tanggal' },
+          { key: 'nis', label: 'NIS' }, { key: 'siswa', label: 'Nama Murid' },
           { key: 'status', label: 'Status' }, { key: 'keterangan', label: 'Keterangan' }
         ])}
       </div>
-      <div class="row g-3">
-        <div class="col-lg-4">
-          <form id="absensiForm" class="card-panel">
-            <h6 class="fw-bold mb-2">Input Absensi</h6>
-            <input type="date" name="tanggal" class="form-control form-control-sm mb-2" value="${today}" required />
-            <select name="siswa_id" class="form-select form-select-sm mb-2" required>
-              ${siswaList.map((s) => `<option value="${escapeHtml(s.siswa_id)}">${escapeHtml(s.nama_lengkap)}</option>`).join('')}
-            </select>
-            <select name="status" class="form-select form-select-sm mb-2">
-              <option>Hadir</option><option>Sakit</option><option>Izin</option><option>Alpa</option><option>Terlambat</option>
-            </select>
-            <input name="keterangan" class="form-control form-control-sm mb-2" placeholder="Keterangan" />
-            <button class="btn btn-primary btn-sm w-100">Simpan Absensi</button>
-          </form>
-        </div>
-        <div class="col-lg-8">
-          <div class="card-panel">
-            <h6 class="fw-bold mb-3">Riwayat Kehadiran</h6>
-            <div class="table-responsive">
-              <table class="table table-bordered table-sm">
-                <thead class="table-light"><tr><th>Tanggal</th><th>Siswa</th><th>Status</th><th>Keterangan</th><th class="no-print">Aksi</th></tr></thead>
-                <tbody>
-                  ${rows.length ? rows.map((r) => `
-                    <tr>
-                      <td>${escapeHtml(r.tanggal)}</td><td>${escapeHtml(getSiswaName(r.siswa_id))}</td>
-                      <td><span class="badge bg-secondary">${escapeHtml(r.status)}</span></td>
-                      <td>${escapeHtml(r.keterangan || '-')}</td>
-                      <td class="no-print"><button class="btn btn-outline-danger btn-sm py-0" onclick="deleteItem('Absensi','absensi_id','${escapeHtml(r.absensi_id)}')"><i class="bi bi-trash"></i></button></td>
-                    </tr>
-                  `).join('') : '<tr><td colspan="5" class="text-center text-muted">Belum ada data absensi</td></tr>'}
-                </tbody>
-              </table>
-            </div>
+
+      <!-- Kartu Ringkasan KPI mirip referensi -->
+      <div class="row g-2 mb-3">
+        <div class="col-6 col-md-2">
+          <div class="stat-card" style="background:#f8fafc;">
+            <div class="text-muted small">Jumlah Murid</div>
+            <div class="stat-value text-primary">${siswaList.length}</div>
           </div>
         </div>
+        <div class="col-6 col-md-2">
+          <div class="stat-card" style="background:#ecfdf5;">
+            <div class="text-muted small">Hadir</div>
+            <div class="stat-value text-success">${jmlHadir}</div>
+          </div>
+        </div>
+        <div class="col-4 col-md-2">
+          <div class="stat-card" style="background:#eff6ff;">
+            <div class="text-muted small">Sakit</div>
+            <div class="stat-value text-info">${jmlSakit}</div>
+          </div>
+        </div>
+        <div class="col-4 col-md-2">
+          <div class="stat-card" style="background:#fefce8;">
+            <div class="text-muted small">Izin</div>
+            <div class="stat-value text-warning">${jmlIzin}</div>
+          </div>
+        </div>
+        <div class="col-4 col-md-2">
+          <div class="stat-card" style="background:#fef2f2;">
+            <div class="text-muted small">Alpa</div>
+            <div class="stat-value text-danger">${jmlAlpa}</div>
+          </div>
+        </div>
+        <div class="col-12 col-md-2">
+          <div class="stat-card">
+            <div class="text-muted small">Tersimpan Tgl Ini</div>
+            <div class="stat-value">${rowsByDate.length}</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Kontrol Tanggal, Aksi Cepat & Pencarian -->
+      <div class="card-panel">
+        <div class="row g-2 align-items-end mb-3 no-print">
+          <div class="col-md-3">
+            <label class="form-label small fw-semibold mb-1">Tanggal Absensi</label>
+            <input type="date" id="absensiDateInput" class="form-control form-control-sm" value="${escapeHtml(selectedDate)}" />
+          </div>
+          <div class="col-md-4">
+            <label class="form-label small fw-semibold mb-1">Aksi Cepat Semua Murid</label>
+            <div class="d-flex gap-1 flex-wrap">
+              <button type="button" class="btn btn-outline-success btn-sm" onclick="setAllAbsensiStatus('Hadir')">
+                <i class="bi bi-check2-all"></i> Hadir Semua
+              </button>
+              <button type="button" class="btn btn-outline-secondary btn-sm" onclick="setAllAbsensiStatus('Izin')">
+                Izin Semua
+              </button>
+            </div>
+          </div>
+          <div class="col-md-5">
+            <label class="form-label small fw-semibold mb-1">Cari Murid</label>
+            <input type="text" id="absensiSearchInput" class="form-control form-control-sm" placeholder="Cari nama / NIS / NISN..." value="${escapeHtml(window.__ABSENSI_SEARCH__ || '')}" />
+          </div>
+        </div>
+
+        <form id="bulkAbsensiForm">
+          <div class="table-responsive">
+            <table class="table table-hover table-bordered table-sm align-middle mb-0">
+              <thead style="background:#132238;color:#fff;">
+                <tr>
+                  <th style="width:45px;" class="text-center">NO</th>
+                  <th>NAMA MURID</th>
+                  <th style="width:310px;" class="text-center">STATUS KEHADIRAN</th>
+                  <th>KETERANGAN</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${filteredSiswa.length ? filteredSiswa.map((s, idx) => {
+                  const existing = statusMap[s.siswa_id];
+                  const curStatus = existing?.status || 'Hadir';
+                  const curKet = existing?.keterangan || '';
+                  const statuses = [
+                    { val: 'Hadir', label: 'Hadir', cls: 'btn-outline-success' },
+                    { val: 'Sakit', label: 'Sakit', cls: 'btn-outline-info' },
+                    { val: 'Izin', label: 'Izin', cls: 'btn-outline-warning' },
+                    { val: 'Alpa', label: 'Alpa', cls: 'btn-outline-danger' },
+                    { val: 'Terlambat', label: 'Telat', cls: 'btn-outline-secondary' }
+                  ];
+                  return `
+                    <tr data-siswa-row="${escapeHtml(s.siswa_id)}">
+                      <td class="text-center fw-semibold">${idx + 1}</td>
+                      <td>
+                        <div class="fw-bold text-uppercase" style="font-size:0.88rem;">${escapeHtml(s.nama_lengkap)}</div>
+                        <small class="text-muted">NIS: ${escapeHtml(s.nis || '-')} ${s.nisn ? '| NISN: ' + escapeHtml(s.nisn) : ''}</small>
+                      </td>
+                      <td class="text-center">
+                        <div class="btn-group btn-group-sm" role="group">
+                          ${statuses.map((st) => `
+                            <input type="radio" class="btn-check absensi-status-radio" name="status_${escapeHtml(s.siswa_id)}" id="st_${escapeHtml(s.siswa_id)}_${st.val}" value="${st.val}" ${curStatus === st.val ? 'checked' : ''} />
+                            <label class="btn ${st.cls}" for="st_${escapeHtml(s.siswa_id)}_${st.val}">${st.label}</label>
+                          `).join('')}
+                        </div>
+                      </td>
+                      <td>
+                        <input type="text" class="form-control form-control-sm absensi-ket-input" data-siswa-id="${escapeHtml(s.siswa_id)}" placeholder="Catatan (opsional)..." value="${escapeHtml(curKet)}" />
+                      </td>
+                    </tr>
+                  `;
+                }).join('') : '<tr><td colspan="4" class="text-center text-muted py-3">Belum ada data siswa di kelas ini</td></tr>'}
+              </tbody>
+            </table>
+          </div>
+
+          <!-- Bilah Bawah Sticky seperti referensi -->
+          <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mt-3 pt-3 border-top no-print" style="position:sticky;bottom:0;background:#fff;z-index:10;">
+            <small class="text-muted">
+              Default otomatis <strong>Hadir</strong> untuk semua siswa. Ubah yang Sakit/Izin/Alpa lalu klik Simpan.
+            </small>
+            <button type="submit" class="btn btn-primary btn-sm px-4 fw-semibold" id="saveBulkAbsensiBtn">
+              <i class="bi bi-save"></i> Simpan Daftar Hadir (${siswaList.length} Siswa)
+            </button>
+          </div>
+        </form>
       </div>
     `;
   }
@@ -1370,8 +1491,55 @@
       renderCurrentPage();
     });
 
+    document.getElementById('absensiDateInput')?.addEventListener('change', (e) => {
+      window.__SELECTED_ABSENSI_DATE__ = e.target.value;
+      renderCurrentPage();
+    });
+
+    document.getElementById('absensiSearchInput')?.addEventListener('input', (e) => {
+      window.__ABSENSI_SEARCH__ = e.target.value;
+      renderCurrentPage();
+      const inp = document.getElementById('absensiSearchInput');
+      if (inp) { inp.focus(); inp.setSelectionRange(inp.value.length, inp.value.length); }
+    });
+
+    document.getElementById('bulkAbsensiForm')?.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const selectedDate = document.getElementById('absensiDateInput')?.value || new Date().toISOString().slice(0, 10);
+      const siswaList = state.Siswa.filter((s) => s.kelas_id === kelasId);
+      const btn = document.getElementById('saveBulkAbsensiBtn');
+      if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Menyimpan...'; }
+
+      for (const s of siswaList) {
+        const checked = document.querySelector(`input[name="status_${CSS.escape(s.siswa_id)}"]:checked`);
+        const ketInput = document.querySelector(`.absensi-ket-input[data-siswa-id="${CSS.escape(s.siswa_id)}"]`);
+        const statusVal = checked ? checked.value : 'Hadir';
+        const ketVal = ketInput ? ketInput.value.trim() : '';
+
+        const existing = state.Absensi.find(
+          (a) => a.tahun_id === tahunId && a.kelas_id === kelasId && a.siswa_id === s.siswa_id && a.tanggal === selectedDate
+        );
+
+        if (existing) {
+          await persistRecord('Absensi', 'update', { status: statusVal, keterangan: ketVal }, 'absensi_id', existing.absensi_id);
+        } else {
+          await persistRecord('Absensi', 'create', {
+            absensi_id: `ABS-${selectedDate.replace(/-/g, '')}-${s.siswa_id}`,
+            tahun_id: tahunId,
+            kelas_id: kelasId,
+            siswa_id: s.siswa_id,
+            tanggal: selectedDate,
+            status: statusVal,
+            keterangan: ketVal
+          });
+        }
+      }
+
+      renderCurrentPage();
+      alert(`Daftar hadir tanggal ${selectedDate} untuk ${siswaList.length} siswa berhasil disimpan!`);
+    });
+
     const forms = [
-      ['absensiForm', 'Absensi', { tahun_id: tahunId, kelas_id: kelasId }],
       ['kognitifForm', 'Nilai_Kognitif', { tahun_id: tahunId, kelas_id: kelasId }],
       ['psikomotorForm', 'Nilai_Psikomotor', { tahun_id: tahunId, kelas_id: kelasId }],
       ['karakterForm', 'Penilaian_Karakter', { kelas_id: kelasId }],
@@ -1396,6 +1564,12 @@
       renderCurrentPage();
     });
   }
+
+  window.setAllAbsensiStatus = function (statusValue) {
+    document.querySelectorAll(`.absensi-status-radio[value="${statusValue}"]`).forEach((radio) => {
+      radio.checked = true;
+    });
+  };
 
   window.deleteItem = async function (sheetName, idField, idValue) {
     if (!confirm('Hapus data ini?')) return;
