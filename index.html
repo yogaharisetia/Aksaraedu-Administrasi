@@ -229,6 +229,14 @@
     // ========================================================================
     const STORAGE_KEY = 'aksraeduadm_final_v1';
 
+    function getTodayLocalStr() {
+      const d = new Date();
+      const yr = d.getFullYear();
+      const mo = String(d.getMonth() + 1).padStart(2, '0');
+      const day = String(d.getDate()).padStart(2, '0');
+      return `${yr}-${mo}-${day}`;
+    }
+
     const INDIKATOR_PSIKOMOTOR = [
       { key: 'teknik', label: 'Penguasaan Teknik' },
       { key: 'prosedur', label: 'Ketepatan Prosedur' },
@@ -472,19 +480,23 @@
 
     let appData = loadAppData();
 
+    const _nowInit = new Date();
+    const _todayInitStr = getTodayLocalStr();
+
     const uiState = {
       activeTab: 'beranda',
       searchQuery: '',
       selectedMapelId: appData.mapel[2]?.id || appData.mapel[0]?.id || 'MAP-1',
       nilaiSubTab: 'kognitif',
-      absensiTanggal: '2026-11-23',
-      absensiBulan: '2026-11',
-      kalenderTahun: 2026,
-      kalenderBulan: 10,
-      kalenderSelectedDate: '2026-11-23',
+      pengolahanSortMode: 'absen', // 'absen' | 'ranking'
+      absensiTanggal: _todayInitStr,
+      absensiBulan: _todayInitStr.slice(0, 7),
+      kalenderTahun: _nowInit.getFullYear(),
+      kalenderBulan: _nowInit.getMonth(),
+      kalenderSelectedDate: _todayInitStr,
       poinTipeTab: 'positif',
       poinSelectedKategoriId: 'KP-1',
-      poinTanggal: '2026-11-23',
+      poinTanggal: _todayInitStr,
       poinCatatan: '',
       poinSelectedSiswaIds: [],
       selected7KaihSiswaId: appData.siswa[0]?.id || '',
@@ -614,17 +626,19 @@
     // ========================================================================
     // ENGINE PERHITUNGAN NILAI (KOGNITIF, PSIKOMOTOR, AFEKTIF & 7KAIH)
     // ========================================================================
+    function cleanTpDeskripsi(text) {
+      return String(text || '').trim().replace(/\.+$/, '');
+    }
+
     function hitungNilaiMapelSiswa(siswaId, mapelId, semester) {
       const m = appData.mapel.find(x => x.id === mapelId);
-      if (!m) return { kognitif: null, psikomotor: null, afektif: null, nilaiAkhir: null, deskripsiBaik: '-', deskripsiPerluBimbingan: '-' };
+      if (!m) return { kognitif: null, psikomotor: null, afektif: null, nilaiAkhir: null, deskripsiBaik: '-', deskripsiPerluBimbingan: '' };
 
       const key = `${semester}|${mapelId}|${siswaId}`;
       const tpList = m.tp?.[semester] || [];
       const kogRec = appData.nilaiKognitif[key] || { tp: {}, sas: '' };
 
       const tpScores = [];
-      const tpBaik = [];
-      const tpKurang = [];
 
       tpList.forEach(tp => {
         const d = kogRec.tp?.[tp.id] || {};
@@ -632,8 +646,6 @@
         if (vals.length) {
           const avg = vals.reduce((a, b) => a + b, 0) / vals.length;
           tpScores.push({ tp, avg });
-          if (avg >= (m.kktp || 75)) tpBaik.push(tp.deskripsi);
-          else tpKurang.push(tp.deskripsi);
         }
       });
 
@@ -661,12 +673,29 @@
 
       const nilaiAkhir = totalBobot > 0 ? Math.round(totalSkor / totalBobot) : null;
 
-      const deskripsiBaik = tpBaik.length
-        ? `Ananda menunjukkan pemahaman baik dalam ${tpBaik.join('; ')}.`
-        : 'Ananda menunjukkan pemahaman yang baik dalam mengikuti pembelajaran pada semester ini.';
-      const deskripsiPerluBimbingan = tpKurang.length
-        ? `Ananda masih perlu bimbingan dalam ${tpKurang.join('; ')}.`
-        : 'Ananda konsisten menunjukkan sikap belajar yang positif.';
+      let deskripsiBaik = 'Ananda menunjukkan pemahaman yang baik dalam mengikuti pembelajaran pada semester ini.';
+      let deskripsiPerluBimbingan = '';
+
+      if (tpScores.length > 0) {
+        const maxAvg = Math.max(...tpScores.map(item => item.avg));
+        const minAvg = Math.min(...tpScores.map(item => item.avg));
+
+        const tpTertinggi = tpScores
+          .filter(item => Math.abs(item.avg - maxAvg) < 0.0001)
+          .map(item => cleanTpDeskripsi(item.tp.deskripsi));
+
+        deskripsiBaik = `Ananda menunjukkan pemahaman sangat baik dalam ${tpTertinggi.join('; ')}.`;
+
+        // Pengecualian mutlak: jika nilai terendah = 100 (semua TP bernilai 100), tidak perlu mencantumkan perlu bimbingan
+        if (minAvg < 100) {
+          const tpTerendah = tpScores
+            .filter(item => Math.abs(item.avg - minAvg) < 0.0001)
+            .map(item => cleanTpDeskripsi(item.tp.deskripsi));
+          deskripsiPerluBimbingan = `Ananda perlu bimbingan dalam ${tpTerendah.join('; ')}.`;
+        } else {
+          deskripsiPerluBimbingan = '';
+        }
+      }
 
       return { kognitif, psikomotor, afektif, nilaiAkhir, deskripsiBaik, deskripsiPerluBimbingan };
     }
@@ -946,13 +975,47 @@
       reader.readAsArrayBuffer(file);
     }
 
+    function getRekapPengolahanMapel(mapelId, sem) {
+      const rankMap = {};
+      const allScores = appData.siswa
+        .map(s => ({ id: s.id, nilaiAkhir: hitungNilaiMapelSiswa(s.id, mapelId, sem).nilaiAkhir }))
+        .filter(x => x.nilaiAkhir !== null && x.nilaiAkhir !== undefined)
+        .sort((a, b) => b.nilaiAkhir - a.nilaiAkhir);
+
+      let currentRank = 0;
+      let prevScore = null;
+      allScores.forEach((item, index) => {
+        if (prevScore === null || item.nilaiAkhir < prevScore) {
+          currentRank = index + 1;
+          prevScore = item.nilaiAkhir;
+        }
+        rankMap[item.id] = currentRank;
+      });
+      return rankMap;
+    }
+
     function exportNilaiExcel() {
       const sem = appData.profil.semesterAktif;
       const mapel = appData.mapel.find(m => m.id === uiState.selectedMapelId);
       if (!mapel) return;
-      const rows = appData.siswa.map((s, i) => {
+      const rankMap = getRekapPengolahanMapel(mapel.id, sem);
+      const list = uiState.pengolahanSortMode === 'ranking'
+        ? [...appData.siswa].sort((a, b) => (rankMap[a.id] ?? 9999) - (rankMap[b.id] ?? 9999))
+        : appData.siswa;
+
+      const rows = list.map((s, i) => {
         const h = hitungNilaiMapelSiswa(s.id, mapel.id, sem);
-        return { No: i + 1, NISN: s.nisn, Nama: s.nama, Kognitif: h.kognitif ?? '', Psikomotor: h.psikomotor ?? '', Afektif: h.afektif ?? '', Nilai_Akhir: h.nilaiAkhir ?? '' };
+        return {
+          No: i + 1,
+          Peringkat: rankMap[s.id] ?? '-',
+          NISN: s.nisn,
+          Nama: s.nama,
+          Kognitif: h.kognitif ?? '',
+          Psikomotor: h.psikomotor ?? '',
+          Afektif: h.afektif ?? '',
+          Nilai_Akhir: h.nilaiAkhir ?? '',
+          Deskripsi_Capaian: [h.deskripsiBaik, h.deskripsiPerluBimbingan].filter(Boolean).join(' ')
+        };
       });
       exportTableToExcel(`Rekap_Nilai_${mapel.nama}_${sem}`, rows);
     }
@@ -1057,7 +1120,7 @@
     }
 
     // ========================================================================
-    // HALAMAN PENGOLAHAN NILAI RAPOR
+    // HALAMAN PENGOLAHAN NILAI RAPOR (DENGAN URUTAN RANKING / PERINGKAT)
     // ========================================================================
     function renderPengolahanNilai() {
       const sem = appData.profil.semesterAktif;
@@ -1065,7 +1128,11 @@
         uiState.selectedMapelId = appData.mapel[0].id;
       }
       const mapel = appData.mapel.find(m => m.id === uiState.selectedMapelId) || appData.mapel[0];
-      const students = getFilteredStudents();
+      const rankMap = getRekapPengolahanMapel(mapel.id, sem);
+      const filtered = getFilteredStudents();
+      const students = uiState.pengolahanSortMode === 'ranking'
+        ? [...filtered].sort((a, b) => (rankMap[a.id] ?? 9999) - (rankMap[b.id] ?? 9999))
+        : filtered;
       const b = appData.bobotNilai;
 
       return `
@@ -1074,12 +1141,16 @@
           <div class="flex flex-wrap items-center justify-between gap-3 no-print">
             <div>
               <h1 class="font-heading text-xl font-extrabold text-slate-900">Pengolahan Nilai Rapor</h1>
-              <p class="text-xs text-slate-500">Rekap otomatis Kognitif (${b.kognitif}%), Psikomotor (${b.psikomotor}%), dan Afektif (${b.afektif}%) menjadi Nilai Akhir Rapor.</p>
+              <p class="text-xs text-slate-500">Rekap otomatis Kognitif (${b.kognitif}%), Psikomotor (${b.psikomotor}%), dan Afektif (${b.afektif}%) beserta Peringkat / Ranking siswa.</p>
             </div>
             <div class="flex flex-wrap items-center gap-2">
               <select onchange="uiState.selectedMapelId = this.value; renderApp();" class="px-3.5 py-2 text-xs font-bold border border-emerald-400 bg-emerald-50 text-emerald-950 rounded-xl">
                 ${appData.mapel.map(m => `<option value="${m.id}" ${m.id === mapel?.id ? 'selected' : ''}>${esc(m.nama)}</option>`).join('')}
               </select>
+              <div class="inline-flex p-1 rounded-xl bg-slate-100 border border-slate-200 gap-1">
+                <button type="button" onclick="uiState.pengolahanSortMode='absen'; renderApp();" class="px-3 py-1.5 rounded-lg text-xs font-bold ${uiState.pengolahanSortMode === 'absen' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-600'}">Urutkan: Absen</button>
+                <button type="button" onclick="uiState.pengolahanSortMode='ranking'; renderApp();" class="px-3 py-1.5 rounded-lg text-xs font-bold ${uiState.pengolahanSortMode === 'ranking' ? 'bg-emerald-700 text-white shadow-sm' : 'text-slate-600'}">Urutkan: Peringkat Tertinggi</button>
+              </div>
               <button type="button" onclick="exportNilaiExcel()" class="px-3.5 py-2 rounded-xl bg-emerald-700 text-white text-xs font-bold">Export Excel</button>
               <button type="button" onclick="window.print()" class="px-3.5 py-2 rounded-xl bg-slate-900 text-white text-xs font-bold">Cetak Rekap</button>
             </div>
@@ -1096,12 +1167,25 @@
                     <th class="px-3 py-3 text-center">Psikomotor (${b.psikomotor}%)</th>
                     <th class="px-3 py-3 text-center">Afektif (${b.afektif}%)</th>
                     <th class="px-3 py-3 text-center bg-emerald-950">Nilai Akhir Rapor</th>
+                    <th class="px-3 py-3 text-center bg-emerald-900 w-24">Peringkat</th>
                     <th class="px-3 py-3 min-w-[240px]">Deskripsi Capaian Rapor</th>
                   </tr>
                 </thead>
                 <tbody class="divide-y divide-slate-200">
                   ${students.map((s, idx) => {
                     const h = hitungNilaiMapelSiswa(s.id, mapel.id, sem);
+                    const rank = rankMap[s.id];
+                    let rankBadge = `<span class="text-slate-400 font-bold">-</span>`;
+                    if (rank === 1) {
+                      rankBadge = `<span class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-amber-100 border border-amber-300 text-amber-900 font-extrabold text-[11px]">#1</span>`;
+                    } else if (rank === 2) {
+                      rankBadge = `<span class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-slate-200 border border-slate-300 text-slate-800 font-extrabold text-[11px]">#2</span>`;
+                    } else if (rank === 3) {
+                      rankBadge = `<span class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-orange-100 border border-orange-300 text-orange-900 font-extrabold text-[11px]">#3</span>`;
+                    } else if (rank) {
+                      rankBadge = `<span class="inline-flex items-center px-2.5 py-0.5 rounded-full bg-emerald-50 text-emerald-800 font-bold text-[11px]">#${rank}</span>`;
+                    }
+                    const fullDesc = [h.deskripsiBaik, h.deskripsiPerluBimbingan].filter(Boolean).join(' ');
                     return `
                       <tr>
                         <td class="px-3 py-2.5 text-center">${idx + 1}</td>
@@ -1110,7 +1194,8 @@
                         <td class="px-3 py-2.5 text-center">${h.psikomotor ?? '-'}</td>
                         <td class="px-3 py-2.5 text-center">${h.afektif ?? '-'}</td>
                         <td class="px-3 py-2.5 text-center font-extrabold text-emerald-800">${h.nilaiAkhir ?? '-'}</td>
-                        <td class="px-3 py-2.5 text-[11px] text-slate-600">${esc(h.deskripsiBaik)} ${esc(h.deskripsiPerluBimbingan)}</td>
+                        <td class="px-3 py-2.5 text-center">${rankBadge}</td>
+                        <td class="px-3 py-2.5 text-[11px] text-slate-600">${esc(fullDesc)}</td>
                       </tr>
                     `;
                   }).join('')}
@@ -1241,9 +1326,20 @@
       `).join('');
     }
 
+    function goToKalenderHariIni() {
+      const now = new Date();
+      const todayStr = getTodayLocalStr();
+      uiState.kalenderTahun = now.getFullYear();
+      uiState.kalenderBulan = now.getMonth();
+      uiState.kalenderSelectedDate = todayStr;
+      uiState.absensiTanggal = todayStr;
+      renderApp();
+    }
+
     function renderBeranda() {
       const p = appData.profil;
       const sem = p.semesterAktif;
+      const todayStr = getTodayLocalStr();
       const tglHariIni = uiState.absensiTanggal;
       let hadirCount = 0;
       appData.siswa.forEach(s => {
@@ -1259,6 +1355,28 @@
       const daysInMonth = new Date(yr, mo + 1, 0).getDate();
       const agendaTerpilih = appData.kalenderAgenda.filter(a => a.tanggal === uiState.kalenderSelectedDate);
 
+      // Ringkasan interaktif tanggal yang dipilih di kalender
+      const selDateObj = new Date(`${uiState.kalenderSelectedDate}T00:00:00`);
+      const namaHariTerpilih = !isNaN(selDateObj.getTime())
+        ? selDateObj.toLocaleDateString('id-ID', { weekday: 'long' })
+        : '';
+      const tglTerpilihFormatted = !isNaN(selDateObj.getTime())
+        ? selDateObj.toLocaleDateString('id-ID', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })
+        : uiState.kalenderSelectedDate;
+
+      let selHadir = 0, selSakit = 0, selIzin = 0, selAlpa = 0;
+      appData.siswa.forEach(s => {
+        const st = appData.absensi[`${sem}|${uiState.kalenderSelectedDate}|${s.id}`] || 'H';
+        if (st === 'S') selSakit++;
+        else if (st === 'I') selIzin++;
+        else if (st === 'A') selAlpa++;
+        else selHadir++;
+      });
+
+      const jadwalHariTerpilih = appData.jadwalPelajaran.filter(
+        j => (j.hari || '').toLowerCase() === namaHariTerpilih.toLowerCase()
+      );
+
       let cells = '';
       for (let i = 0; i < offset; i++) {
         cells += `<div class="h-16 rounded-xl bg-slate-50 border border-slate-100"></div>`;
@@ -1267,13 +1385,26 @@
         const dateStr = `${yr}-${String(mo + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
         const ag = appData.kalenderAgenda.filter(a => a.tanggal === dateStr);
         const isSelected = uiState.kalenderSelectedDate === dateStr;
+        const isToday = dateStr === todayStr;
         const isSunday = ((offset + d - 1) % 7) === 6;
+
+        let cellClass = 'border-slate-200 bg-white hover:bg-slate-50';
+        if (isSelected && isToday) {
+          cellClass = 'border-emerald-700 bg-emerald-50 ring-2 ring-emerald-600';
+        } else if (isSelected) {
+          cellClass = 'border-emerald-600 bg-emerald-50/70 ring-1 ring-emerald-600';
+        } else if (isToday) {
+          cellClass = 'border-emerald-500 bg-emerald-50/40 ring-1 ring-emerald-400';
+        }
+
         cells += `
-          <div onclick="uiState.kalenderSelectedDate='${dateStr}'; renderApp();"
-            class="h-16 p-1.5 rounded-xl border cursor-pointer transition flex flex-col justify-between ${isSelected ? 'border-emerald-600 bg-emerald-50/70 ring-1 ring-emerald-600' : 'border-slate-200 bg-white hover:bg-slate-50'}">
-            <div class="flex items-center justify-between">
-              <span class="text-xs font-extrabold ${isSunday ? 'text-rose-600' : 'text-slate-800'}">${d}</span>
-              ${ag.length ? `<span class="w-2 h-2 rounded-full bg-emerald-600"></span>` : ''}
+          <div onclick="uiState.kalenderSelectedDate='${dateStr}'; uiState.absensiTanggal='${dateStr}'; renderApp();"
+            ondblclick="uiState.kalenderSelectedDate='${dateStr}'; openTambahAgendaModal();"
+            title="Klik untuk melihat detail tanggal • Double-klik untuk tambah agenda"
+            class="h-16 p-1.5 rounded-xl border cursor-pointer transition flex flex-col justify-between ${cellClass}">
+            <div class="flex items-center justify-between gap-1">
+              <span class="text-xs font-extrabold ${isToday ? 'px-1.5 py-0.5 rounded-md bg-emerald-700 text-white' : (isSunday ? 'text-rose-600' : 'text-slate-800')}">${d}</span>
+              ${isToday ? `<span class="text-[8px] font-extrabold uppercase tracking-tight px-1 py-0.5 rounded bg-emerald-100 text-emerald-800">Hari Ini</span>` : (ag.length ? `<span class="w-2 h-2 rounded-full bg-emerald-600"></span>` : '')}
             </div>
             ${ag[0] ? `<div class="text-[9px] font-bold px-1.5 py-0.5 rounded bg-sky-100 text-sky-800 truncate">${esc(ag[0].judul)}</div>` : ''}
           </div>
@@ -1324,9 +1455,10 @@
               <div class="flex flex-wrap items-center justify-between gap-2">
                 <div>
                   <h2 class="font-heading font-extrabold text-base text-slate-900">Kalender Sekolah &amp; Agenda Tahunan</h2>
-                  <p class="text-xs text-slate-500">Klik tanggal untuk menambah atau melihat agenda kegiatan.</p>
+                  <p class="text-xs text-slate-500">Klik tanggal untuk melihat detail kehadiran &amp; jadwal, atau double-klik untuk tambah agenda.</p>
                 </div>
                 <div class="flex items-center gap-1.5">
+                  <button type="button" onclick="goToKalenderHariIni()" class="px-3 py-1.5 rounded-xl border border-emerald-300 bg-white hover:bg-emerald-50 text-emerald-800 text-xs font-bold">Hari Ini</button>
                   <button type="button" onclick="uiState.kalenderBulan--; if(uiState.kalenderBulan<0){uiState.kalenderBulan=11;uiState.kalenderTahun--;} renderApp();" class="p-2 rounded-xl border border-slate-200 hover:bg-slate-50"><i data-lucide="chevron-left" class="w-4 h-4"></i></button>
                   <span class="px-3 py-1.5 rounded-xl border border-emerald-200 bg-emerald-50 text-emerald-900 text-xs font-bold capitalize">${esc(namaBulan)}</span>
                   <button type="button" onclick="uiState.kalenderBulan++; if(uiState.kalenderBulan>11){uiState.kalenderBulan=0;uiState.kalenderTahun++;} renderApp();" class="p-2 rounded-xl border border-slate-200 hover:bg-slate-50"><i data-lucide="chevron-right" class="w-4 h-4"></i></button>
@@ -1340,14 +1472,31 @@
 
             <div class="space-y-4">
               <div class="bg-white rounded-2xl border border-slate-200 p-4 space-y-3">
-                <div class="flex items-center justify-between">
+                <div class="flex items-start justify-between gap-2">
                   <div>
-                    <div class="text-[10px] font-extrabold uppercase text-slate-400">AGENDA TANGGAL</div>
-                    <div class="font-heading font-extrabold text-sm text-slate-900">${esc(uiState.kalenderSelectedDate)}</div>
+                    <div class="text-[10px] font-extrabold uppercase text-slate-400">DETAIL TANGGAL TERPILIH</div>
+                    <div class="font-heading font-extrabold text-sm text-slate-900 capitalize">${esc(tglTerpilihFormatted)}</div>
                   </div>
-                  <button type="button" onclick="openTambahAgendaModal()" class="px-3 py-1.5 rounded-xl bg-emerald-700 text-white text-xs font-bold">+ Agenda</button>
+                  <button type="button" onclick="openTambahAgendaModal()" class="px-3 py-1.5 rounded-xl bg-emerald-700 text-white text-xs font-bold shrink-0">+ Agenda</button>
                 </div>
+
+                <!-- Ringkasan Kehadiran Tanggal Terpilih -->
+                <div class="p-2.5 rounded-xl border border-emerald-100 bg-emerald-50/50 space-y-1.5">
+                  <div class="flex items-center justify-between text-[11px]">
+                    <span class="font-bold text-emerald-900">Ringkasan Kehadiran</span>
+                    <button type="button" onclick="uiState.absensiTanggal='${uiState.kalenderSelectedDate}'; uiState.absensiBulan='${uiState.kalenderSelectedDate.slice(0, 7)}'; uiState.activeTab='absensi'; renderApp();" class="font-bold text-emerald-700 hover:underline">Input Absensi &rarr;</button>
+                  </div>
+                  <div class="grid grid-cols-4 gap-1.5 text-center text-[11px]">
+                    <div class="p-1.5 rounded-lg bg-white border border-slate-200"><div class="text-[10px] text-slate-500">Hadir</div><div class="font-extrabold text-emerald-700">${selHadir}</div></div>
+                    <div class="p-1.5 rounded-lg bg-white border border-slate-200"><div class="text-[10px] text-slate-500">Sakit</div><div class="font-extrabold text-amber-600">${selSakit}</div></div>
+                    <div class="p-1.5 rounded-lg bg-white border border-slate-200"><div class="text-[10px] text-slate-500">Izin</div><div class="font-extrabold text-sky-600">${selIzin}</div></div>
+                    <div class="p-1.5 rounded-lg bg-white border border-slate-200"><div class="text-[10px] text-slate-500">Alpa</div><div class="font-extrabold text-rose-600">${selAlpa}</div></div>
+                  </div>
+                </div>
+
+                <!-- Agenda Pada Tanggal Terpilih -->
                 <div class="space-y-2">
+                  <div class="text-[11px] font-bold text-slate-700">Agenda Kegiatan</div>
                   ${agendaTerpilih.length ? agendaTerpilih.map(a => `
                     <div class="p-3 rounded-xl border border-slate-200 bg-slate-50 flex items-start justify-between gap-2">
                       <div>
@@ -1362,11 +1511,14 @@
 
               <div class="bg-white rounded-2xl border border-slate-200 p-4 space-y-3">
                 <div class="flex items-center justify-between">
-                  <h3 class="font-heading font-extrabold text-sm text-slate-900">Jadwal Pembelajaran</h3>
+                  <div>
+                    <h3 class="font-heading font-extrabold text-sm text-slate-900 capitalize">Jadwal Hari ${esc(namaHariTerpilih || 'Pembelajaran')}</h3>
+                    <div class="text-[11px] text-slate-500">${jadwalHariTerpilih.length ? `${jadwalHariTerpilih.length} mata pelajaran terjadwal` : 'Tidak ada jadwal khusus hari ini'}</div>
+                  </div>
                   <button type="button" onclick="uiState.activeTab='jadwal'; renderApp();" class="text-xs font-bold text-emerald-700">Semua</button>
                 </div>
                 <div class="space-y-2">
-                  ${appData.jadwalPelajaran.slice(0, 3).map(j => `
+                  ${(jadwalHariTerpilih.length ? jadwalHariTerpilih : appData.jadwalPelajaran.slice(0, 3)).map(j => `
                     <div class="p-2.5 rounded-xl border border-slate-200 flex items-center justify-between text-xs">
                       <div>
                         <div class="font-bold text-slate-900">${esc(j.mapel)}</div>
@@ -1637,8 +1789,8 @@
       const bulan = uiState.absensiBulan || tgl.slice(0, 7);
       const students = getFilteredStudents();
       const [yrStr, moStr] = bulan.split('-');
-      const yr = Number(yrStr) || 2026;
-      const mo = Number(moStr) || 11;
+      const yr = Number(yrStr) || new Date().getFullYear();
+      const mo = Number(moStr) || (new Date().getMonth() + 1);
       const daysInMonth = new Date(yr, mo, 0).getDate();
       const namaBulanLabel = new Date(yr, mo - 1, 1).toLocaleDateString('id-ID', { month: 'long', year: 'numeric' });
 
@@ -2743,6 +2895,17 @@
               <tbody>
                 ${appData.mapel.map((m, idx) => {
                   const h = hitungNilaiMapelSiswa(siswa.id, m.id, semester);
+                  const hasBimbingan = Boolean(h.deskripsiPerluBimbingan && h.deskripsiPerluBimbingan.trim());
+                  if (!hasBimbingan) {
+                    return `
+                      <tr>
+                        <td class="px-2 py-2.5 text-center align-top">${idx + 1}</td>
+                        <td class="px-3 py-2.5 font-bold align-top">${esc(m.nama)}</td>
+                        <td class="px-2 py-2.5 text-center font-extrabold align-top">${h.nilaiAkhir ?? '-'}</td>
+                        <td class="px-3 py-2 leading-relaxed">${esc(h.deskripsiBaik)}</td>
+                      </tr>
+                    `;
+                  }
                   return `
                     <tr>
                       <td rowspan="2" class="px-2 py-2.5 text-center align-top">${idx + 1}</td>
