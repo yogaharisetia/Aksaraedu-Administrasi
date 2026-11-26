@@ -155,7 +155,7 @@
 
     <!-- Kontainer Utama -->
     <div id="mainShell" class="flex-1 flex flex-col min-w-0 lg:ml-[264px]">
-      <!-- Topbar Sesuai Tampilan Asli + Kontrol Orientasi Cetak -->
+      <!-- Topbar Sesuai Tampilan Asli + Kontrol Orientasi Cetak & Save Data -->
       <header class="no-print sticky top-0 z-30 bg-white border-b border-slate-200 px-4 lg:px-6 py-3">
         <div class="flex flex-wrap items-center justify-between gap-3">
           <div class="flex items-center gap-3 flex-1 min-w-[220px] max-w-md">
@@ -168,7 +168,7 @@
                 type="text"
                 id="globalSearchInput"
                 placeholder="Cari siswa, NISN, atau menu..."
-                oninput="uiState.searchQuery = this.value; renderApp();"
+                oninput="handleGlobalSearch(this.value)"
                 class="w-full pl-9 pr-3 py-2 text-xs border border-slate-200 rounded-xl bg-slate-50 focus:bg-white focus:outline-none focus:border-emerald-600"
               />
             </div>
@@ -196,15 +196,15 @@
               <option value="landscape">Landscape</option>
             </select>
 
-            <!-- Status Sinkron -->
+            <!-- Status Penyimpanan -->
             <div id="syncStatusPill" class="hidden sm:flex items-center gap-1.5 px-3 py-2 rounded-xl border border-emerald-200 bg-emerald-50 text-emerald-800 text-xs font-bold">
               <span id="syncStatusDot" class="w-2 h-2 rounded-full bg-emerald-500"></span>
-              <span id="syncStatusText">Tersinkron</span>
+              <span id="syncStatusText">Tersimpan Lokal</span>
             </div>
 
-            <!-- Tombol Sinkron -->
-            <button type="button" onclick="syncToGas()" class="px-3.5 py-2 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-slate-800 text-xs font-bold flex items-center gap-1.5">
-              <i data-lucide="refresh-cw" class="w-3.5 h-3.5 text-emerald-700"></i> Sinkron
+            <!-- Tombol Save Data Manual (Kirim ke Spreadsheet hanya saat diklik) -->
+            <button id="btnSaveData" type="button" onclick="syncToGas(false)" class="px-3.5 py-2 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-slate-800 text-xs font-bold flex items-center gap-1.5 transition" title="Simpan seluruh data & catatan ke Google Spreadsheet">
+              <i data-lucide="save" class="w-3.5 h-3.5 text-emerald-700"></i> <span id="btnSaveDataLabel">Save Data</span>
             </button>
 
             <!-- Tombol Pengaturan URL -->
@@ -229,7 +229,7 @@
     // ========================================================================
     const STORAGE_KEY = 'aksraeduadm_final_v1';
     const GAS_URL_KEY = 'aksraeduadm_gas_url_v1';
-    const DEFAULT_GAS_URL = ''; // Opsional: tempel URL Web App GAS di sini agar otomatis aktif di semua perangkat tanpa input manual
+    const DEFAULT_GAS_URL = '';
 
     function getTodayLocalStr() {
       const d = new Date();
@@ -272,8 +272,8 @@
 
     const DEFAULT_APP_DATA = {
       gasUrl: DEFAULT_GAS_URL,
-      autoSync: true,
-      lastSyncTime: '23.15',
+      autoSync: false, // Default manual Save Data agar tidak lag saat input catatan/nilai
+      lastSyncTime: '',
       updatedAt: 0,
       printOrientation: 'portrait',
       logos: { logoDinas: '', logoSekolah: '' },
@@ -281,7 +281,8 @@
         namaSekolah: 'SD Negeri Bojongkacor 02',
         npsn: '20206875',
         alamatSekolah: 'Jl. Parakan Panjang No. 6, Bandung',
-        dinasPendidikan: 'PEMERINTAH KOTA BANDUNG\nDINAS PENDIDIKAN',
+        dinasPendidikan: 'PEMERINTAH KOTA BANDUNG
+DINAS PENDIDIKAN',
         namaGuru: 'Yoga Hari Setia, S.Pd.',
         jenisIdGuru: 'NIP',
         nipGuru: '7150775676130093',
@@ -465,6 +466,38 @@
       }
     };
 
+    // Normalisasi struktur array & objek agar tidak pernah undefined/null setelah load dari Cloud
+    function normalizeLoadedData(rawParsed, resolvedGas) {
+      const base = JSON.parse(JSON.stringify(DEFAULT_APP_DATA));
+      const parsed = rawParsed || {};
+      return {
+        ...base,
+        ...parsed,
+        gasUrl: resolvedGas,
+        autoSync: parsed.autoSync === true, // Pertahankan mode manual Save Data secara default
+        logos: { ...base.logos, ...(parsed.logos || {}) },
+        profil: { ...base.profil, ...(parsed.profil || {}) },
+        bobotNilai: { ...base.bobotNilai, ...(parsed.bobotNilai || {}) },
+        siswa: Array.isArray(parsed.siswa) ? parsed.siswa : base.siswa,
+        mapel: Array.isArray(parsed.mapel) && parsed.mapel.length ? parsed.mapel : base.mapel,
+        nilaiKognitif: (parsed.nilaiKognitif && typeof parsed.nilaiKognitif === 'object') ? parsed.nilaiKognitif : {},
+        nilaiPsikomotor: (parsed.nilaiPsikomotor && typeof parsed.nilaiPsikomotor === 'object') ? parsed.nilaiPsikomotor : {},
+        nilaiAfektif: (parsed.nilaiAfektif && typeof parsed.nilaiAfektif === 'object') ? parsed.nilaiAfektif : {},
+        nilai7Kaih: (parsed.nilai7Kaih && typeof parsed.nilai7Kaih === 'object') ? parsed.nilai7Kaih : {},
+        kokurikuler: (parsed.kokurikuler && typeof parsed.kokurikuler === 'object') ? parsed.kokurikuler : base.kokurikuler,
+        jenisEkskul: Array.isArray(parsed.jenisEkskul) ? parsed.jenisEkskul : base.jenisEkskul,
+        nilaiEkskul: Array.isArray(parsed.nilaiEkskul) ? parsed.nilaiEkskul : [],
+        absensi: (parsed.absensi && typeof parsed.absensi === 'object') ? parsed.absensi : {},
+        absensiKeterangan: (parsed.absensiKeterangan && typeof parsed.absensiKeterangan === 'object') ? parsed.absensiKeterangan : {},
+        jurnalMengajar: Array.isArray(parsed.jurnalMengajar) ? parsed.jurnalMengajar : [],
+        jadwalPelajaran: Array.isArray(parsed.jadwalPelajaran) ? parsed.jadwalPelajaran : [],
+        kategoriPoin: Array.isArray(parsed.kategoriPoin) ? parsed.kategoriPoin : base.kategoriPoin,
+        logPoin: Array.isArray(parsed.logPoin) ? parsed.logPoin : [],
+        kalenderAgenda: Array.isArray(parsed.kalenderAgenda) ? parsed.kalenderAgenda : [],
+        catatanRapor: (parsed.catatanRapor && typeof parsed.catatanRapor === 'object') ? parsed.catatanRapor : {}
+      };
+    }
+
     function getUrlParamGas() {
       try {
         const params = new URLSearchParams(window.location.search);
@@ -480,26 +513,16 @@
       try {
         const raw = localStorage.getItem(STORAGE_KEY);
         if (!raw) {
-          const fresh = JSON.parse(JSON.stringify(DEFAULT_APP_DATA));
-          fresh.gasUrl = paramGas || storedGas || DEFAULT_GAS_URL;
+          const fresh = normalizeLoadedData(null, paramGas || storedGas || DEFAULT_GAS_URL);
           if (fresh.gasUrl) localStorage.setItem(GAS_URL_KEY, fresh.gasUrl);
           return fresh;
         }
         const parsed = JSON.parse(raw);
         const resolvedGas = paramGas || (parsed.gasUrl || '').trim() || storedGas || DEFAULT_GAS_URL;
         if (resolvedGas) localStorage.setItem(GAS_URL_KEY, resolvedGas);
-        return {
-          ...JSON.parse(JSON.stringify(DEFAULT_APP_DATA)),
-          ...parsed,
-          gasUrl: resolvedGas,
-          logos: { ...DEFAULT_APP_DATA.logos, ...(parsed.logos || {}) },
-          profil: { ...DEFAULT_APP_DATA.profil, ...(parsed.profil || {}) },
-          bobotNilai: { ...DEFAULT_APP_DATA.bobotNilai, ...(parsed.bobotNilai || {}) }
-        };
+        return normalizeLoadedData(parsed, resolvedGas);
       } catch (e) {
-        const fallback = JSON.parse(JSON.stringify(DEFAULT_APP_DATA));
-        fallback.gasUrl = paramGas || storedGas || DEFAULT_GAS_URL;
-        return fallback;
+        return normalizeLoadedData(null, paramGas || storedGas || DEFAULT_GAS_URL);
       }
     }
 
@@ -529,36 +552,95 @@
       selected7KaihSiswaId: appData.siswa[0]?.id || '',
       selectedRaporSiswaId: appData.siswa[0]?.id || '',
       printAllRaporMode: false,
-      syncState: 'idle' // 'idle' | 'loading' | 'syncing' | 'synced' | 'offline'
+      syncState: 'local_saved', // 'local_saved' | 'unsaved_cloud' | 'loading' | 'syncing' | 'synced' | 'offline'
+      hasUnsavedCloudChanges: false,
+      isSyncingNow: false
     };
 
     let autoSyncTimer = null;
+    let searchDebounceTimer = null;
+
+    // Debounce pencarian global agar mengetik tidak merender ulang seluruh DOM tiap 1 huruf secara berat
+    function handleGlobalSearch(val) {
+      uiState.searchQuery = val;
+      if (searchDebounceTimer) clearTimeout(searchDebounceTimer);
+      searchDebounceTimer = setTimeout(() => {
+        renderApp();
+      }, 180);
+    }
+
+    // Perpindahan tab yang terisolasi bersih dan reset state sementara
+    function switchTab(tabId) {
+      uiState.activeTab = tabId;
+      uiState.printAllRaporMode = false;
+      toggleSidebar(false);
+      renderApp();
+      window.scrollTo({ top: 0, behavior: 'instant' });
+    }
 
     function updateSyncIndicator(state, customText) {
       uiState.syncState = state;
+      const pill = document.getElementById('syncStatusPill');
       const dot = document.getElementById('syncStatusDot');
       const txt = document.getElementById('syncStatusText');
-      if (!txt) return;
+      const btnSave = document.getElementById('btnSaveData');
+      const btnLabel = document.getElementById('btnSaveDataLabel');
+
+      if (pill) {
+        pill.className = 'hidden sm:flex items-center gap-1.5 px-3 py-2 rounded-xl border text-xs font-bold ' + (
+          state === 'unsaved_cloud' || state === 'loading' || state === 'syncing'
+            ? 'border-amber-300 bg-amber-50 text-amber-900'
+            : state === 'offline'
+            ? 'border-rose-200 bg-rose-50 text-rose-800'
+            : 'border-emerald-200 bg-emerald-50 text-emerald-800'
+        );
+      }
+
       if (dot) {
         dot.className = 'w-2 h-2 rounded-full ' + (
           state === 'loading' || state === 'syncing' ? 'bg-amber-500 animate-pulse'
+          : state === 'unsaved_cloud' ? 'bg-amber-500'
           : state === 'offline' ? 'bg-rose-500'
           : 'bg-emerald-500'
         );
       }
-      if (customText) {
-        txt.textContent = customText;
-      } else if (state === 'loading') {
-        txt.textContent = 'Memuat Cloud...';
-      } else if (state === 'syncing') {
-        txt.textContent = 'Menyinkronkan...';
-      } else if (state === 'offline') {
-        txt.textContent = 'Lokal (Belum Sinkron)';
-      } else {
-        txt.textContent = `Tersinkron (${appData.lastSyncTime || '23.15'})`;
+
+      if (txt) {
+        if (customText) {
+          txt.textContent = customText;
+        } else if (state === 'loading') {
+          txt.textContent = 'Memuat Cloud...';
+        } else if (state === 'syncing') {
+          txt.textContent = 'Menyimpan ke Cloud...';
+        } else if (state === 'unsaved_cloud') {
+          txt.textContent = 'Tersimpan Lokal (Belum Save Data)';
+        } else if (state === 'offline') {
+          txt.textContent = 'Mode Lokal';
+        } else if (appData.lastSyncTime) {
+          txt.textContent = `Tersimpan Cloud (${appData.lastSyncTime})`;
+        } else {
+          txt.textContent = 'Tersimpan Lokal';
+        }
+      }
+
+      if (btnSave && btnLabel) {
+        if (state === 'syncing') {
+          btnSave.disabled = true;
+          btnLabel.textContent = 'Menyimpan...';
+          btnSave.className = 'px-3.5 py-2 rounded-xl border border-amber-400 bg-amber-500 text-white text-xs font-bold flex items-center gap-1.5 opacity-90 cursor-wait';
+        } else if (uiState.hasUnsavedCloudChanges) {
+          btnSave.disabled = false;
+          btnLabel.textContent = 'Save Data *';
+          btnSave.className = 'px-3.5 py-2 rounded-xl border border-amber-600 bg-amber-500 hover:bg-amber-600 text-white text-xs font-bold flex items-center gap-1.5 shadow-sm transition';
+        } else {
+          btnSave.disabled = false;
+          btnLabel.textContent = 'Save Data';
+          btnSave.className = 'px-3.5 py-2 rounded-xl border border-emerald-300 bg-emerald-50 hover:bg-emerald-100 text-emerald-900 text-xs font-bold flex items-center gap-1.5 transition';
+        }
       }
     }
 
+    // Simpan ke localStorage secara instan (0 ms) tanpa membebani server GAS setiap input
     function saveAppData(silent = false) {
       try {
         appData.updatedAt = Date.now();
@@ -566,21 +648,31 @@
           localStorage.setItem(GAS_URL_KEY, appData.gasUrl.trim());
         }
         localStorage.setItem(STORAGE_KEY, JSON.stringify(appData));
-        if (!silent) showToast('Perubahan disimpan.');
-        scheduleAutoSyncToGas();
+        uiState.hasUnsavedCloudChanges = true;
+        updateSyncIndicator('unsaved_cloud');
+        if (!silent) showToast('Perubahan disimpan di perangkat. Klik "Save Data" untuk kirim ke Cloud.');
+        if (appData.autoSync === true) {
+          scheduleAutoSyncToGas();
+        }
       } catch (e) {
         showToast('Gagal menyimpan ke penyimpanan lokal browser.', 'error');
       }
     }
 
     function scheduleAutoSyncToGas() {
-      if (!appData.gasUrl || appData.autoSync === false) return;
-      updateSyncIndicator('offline', 'Menunggu Sinkron...');
+      if (!appData.gasUrl || appData.autoSync !== true) return;
       if (autoSyncTimer) clearTimeout(autoSyncTimer);
       autoSyncTimer = setTimeout(() => {
         syncToGas(true);
-      }, 2500);
+      }, 4000);
     }
+
+    window.addEventListener('beforeunload', (e) => {
+      if (uiState.hasUnsavedCloudChanges && (appData.gasUrl || '').trim()) {
+        e.preventDefault();
+        e.returnValue = '';
+      }
+    });
 
     function esc(str) {
       return String(str ?? '')
@@ -683,7 +775,7 @@
           th, td { border: 1px solid #333; padding: 5px; }
           table.no-border th, table.no-border td { border: none; }
         </style></head><body>`;
-      const blob = new Blob(['\ufeff', header + htmlContent + '</body></html>'], { type: 'application/msword' });
+      const blob = new Blob(['﻿', header + htmlContent + '</body></html>'], { type: 'application/msword' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
@@ -836,11 +928,17 @@
     // ========================================================================
     function renderDataNilai() {
       const sem = appData.profil.semesterAktif;
-      if (!appData.mapel.some(m => m.id === uiState.selectedMapelId) && appData.mapel.length) {
+      if (!Array.isArray(appData.mapel) || !appData.mapel.length) {
+        appData.mapel = JSON.parse(JSON.stringify(DEFAULT_APP_DATA.mapel));
+      }
+      if (!appData.mapel.some(m => m.id === uiState.selectedMapelId)) {
         uiState.selectedMapelId = appData.mapel[0].id;
       }
       const mapel = appData.mapel.find(m => m.id === uiState.selectedMapelId) || appData.mapel[0];
-      const tpList = mapel?.tp?.[sem] || [];
+      if (mapel && !mapel.tp) {
+        mapel.tp = { 'I (Ganjil)': [], 'II (Genap)': [] };
+      }
+      const tpList = Array.isArray(mapel?.tp?.[sem]) ? mapel.tp[sem] : [];
       const students = getFilteredStudents();
 
       return `
@@ -878,7 +976,7 @@
                   <input type="file" accept=".xlsx,.xls,.csv" onchange="importNilaiFromExcel(event)" class="hidden" />
                 </label>
                 <button type="button" onclick="exportNilaiExcel()" class="px-3 py-1.5 rounded-xl bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-bold">Export Excel</button>
-                <button type="button" onclick="downloadNilaiWord()" class="px-3 py-1.5 rounded-xl border border-slate-300 bg-white hover:bg-slate-50 text-xs font-bold">Download Word</button>
+                <button type="button" onclick="downloadNilaiWord()" class="px-3.5 py-1.5 rounded-xl border border-slate-300 bg-white hover:bg-slate-50 text-xs font-bold">Download Word</button>
               </div>
             </div>
 
@@ -900,6 +998,9 @@
     }
 
     function renderTabelKognitif(students, mapel, sem, tpList) {
+      if (!students.length) {
+        return `<div class="p-8 text-center text-xs text-slate-500">Tidak ada peserta didik yang cocok dengan filter/pencarian.</div>`;
+      }
       return `
         <div class="overflow-x-auto">
           <table class="w-full text-xs text-left">
@@ -907,17 +1008,19 @@
               <tr>
                 <th rowspan="2" class="px-3 py-3 text-center w-10 border-r border-slate-800">No</th>
                 <th rowspan="2" class="px-3 py-3 min-w-[180px] border-r border-slate-800">Nama Peserta Didik</th>
-                ${tpList.map(tp => `
+                ${tpList.length ? tpList.map(tp => `
                   <th colspan="2" class="px-2 py-2 text-center border-r border-slate-800 min-w-[140px]">
                     <div class="text-emerald-400 font-extrabold">${esc(tp.kode)}</div>
                     <div class="text-[10px] font-normal text-slate-300 truncate max-w-[150px] mx-auto" title="${esc(tp.deskripsi)}">${esc(tp.deskripsi)}</div>
                   </th>
-                `).join('')}
+                `).join('') : `<th rowspan="2" class="px-3 py-3 text-center border-r border-slate-800 text-amber-300 font-normal">Belum ada TP (Klik "+ Tambah / Edit TP")</th>`}
                 <th rowspan="2" class="px-3 py-3 text-center bg-emerald-950 w-20">SAS</th>
               </tr>
-              <tr class="bg-slate-800 text-[10px]">
-                ${tpList.map(() => `<th class="px-2 py-1.5 text-center border-r border-slate-700">Form.</th><th class="px-2 py-1.5 text-center border-r border-slate-700">Sum.</th>`).join('')}
-              </tr>
+              ${tpList.length ? `
+                <tr class="bg-slate-800 text-[10px]">
+                  ${tpList.map(() => `<th class="px-2 py-1.5 text-center border-r border-slate-700">Form.</th><th class="px-2 py-1.5 text-center border-r border-slate-700">Sum.</th>`).join('')}
+                </tr>
+              ` : ''}
             </thead>
             <tbody class="divide-y divide-slate-200">
               ${students.map((s, idx) => {
@@ -927,7 +1030,7 @@
                   <tr class="hover:bg-slate-50">
                     <td class="px-3 py-2 text-center">${idx + 1}</td>
                     <td class="px-3 py-2 font-bold text-slate-900">${esc(s.nama)}</td>
-                    ${tpList.map(tp => {
+                    ${tpList.length ? tpList.map(tp => {
                       const d = rec.tp?.[tp.id] || {};
                       return `
                         <td class="px-1.5 py-2 text-center">
@@ -937,7 +1040,7 @@
                           <input type="number" min="0" max="100" value="${d.sum ?? ''}" onchange="updateNilaiKognitif('${s.id}', '${tp.id}', 'sum', this.value)" class="w-14 px-1.5 py-1 text-center border border-slate-300 rounded-lg" />
                         </td>
                       `;
-                    }).join('')}
+                    }).join('') : `<td class="px-3 py-2 text-center text-slate-400">-</td>`}
                     <td class="px-2 py-2 text-center bg-emerald-50/40">
                       <input type="number" min="0" max="100" value="${rec.sas ?? ''}" onchange="updateNilaiSas('${s.id}', this.value)" class="w-14 px-1.5 py-1 text-center font-bold border border-emerald-400 rounded-lg bg-white" />
                     </td>
@@ -951,6 +1054,9 @@
     }
 
     function renderTabelSkala14(students, mapel, sem, tipe, indikatorList) {
+      if (!students.length) {
+        return `<div class="p-8 text-center text-xs text-slate-500">Tidak ada peserta didik yang cocok dengan filter/pencarian.</div>`;
+      }
       const store = tipe === 'psikomotor' ? appData.nilaiPsikomotor : appData.nilaiAfektif;
       return `
         <div class="overflow-x-auto">
@@ -981,7 +1087,7 @@
                         </select>
                       </td>
                     `).join('')}
-                    <td class="px-3 py-2 text-center font-extrabold text-emerald-800">${konv ?? '-'}</td>
+                    <td id="konv_${tipe}_${s.id}" class="px-3 py-2 text-center font-extrabold text-emerald-800">${konv ?? '-'}</td>
                   </tr>
                 `;
               }).join('')}
@@ -1006,13 +1112,21 @@
       saveAppData(true);
     }
 
+    // Update sel konversi langsung di DOM tanpa merender ulang seluruh tabel 41 siswa (menghilangkan lag)
     function updateNilaiSkala14(tipe, siswaId, indKey, val) {
-      const key = `${appData.profil.semesterAktif}|${uiState.selectedMapelId}|${siswaId}`;
+      const sem = appData.profil.semesterAktif;
+      const mapelId = uiState.selectedMapelId;
+      const key = `${sem}|${mapelId}|${siswaId}`;
       const store = tipe === 'psikomotor' ? appData.nilaiPsikomotor : appData.nilaiAfektif;
       if (!store[key]) store[key] = {};
       store[key][indKey] = val === '' ? '' : Number(val);
       saveAppData(true);
-      renderApp();
+      const cell = document.getElementById(`konv_${tipe}_${siswaId}`);
+      if (cell) {
+        const h = hitungNilaiMapelSiswa(siswaId, mapelId, sem);
+        const konv = tipe === 'psikomotor' ? h.psikomotor : h.afektif;
+        cell.textContent = konv ?? '-';
+      }
     }
 
     function downloadTemplateNilaiExcel() {
@@ -1533,7 +1647,7 @@
             ${g.items.map(item => {
               const active = uiState.activeTab === item.id;
               return `
-                <button type="button" onclick="uiState.activeTab='${item.id}'; toggleSidebar(false); renderApp();"
+                <button type="button" data-menu-id="${item.id}" onclick="switchTab('${item.id}')"
                   class="w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-left font-bold transition ${active ? 'bg-emerald-600 text-white shadow-sm' : 'text-emerald-100/85 hover:bg-emerald-900/70 hover:text-white'}">
                   <i data-lucide="${item.icon}" class="w-4 h-4 shrink-0"></i>
                   <span class="truncate">${item.label}</span>
@@ -1640,10 +1754,10 @@
               <p class="text-xs text-slate-600">Wali Kelas <strong>${esc(p.kelasAktif)}</strong> (${esc(p.faseAktif)}) di <strong>${esc(p.namaSekolah)}</strong> • Masa Pengabdian: <span class="font-bold text-emerald-700">${hitungMasaPengabdian(p.tanggalMulaiMengajar)}</span></p>
             </div>
             <div class="flex flex-col gap-2">
-              <button type="button" onclick="uiState.activeTab='nilai'; renderApp();" class="px-4 py-2.5 rounded-xl bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-bold flex items-center gap-2">
+              <button type="button" onclick="switchTab('nilai')" class="px-4 py-2.5 rounded-xl bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-bold flex items-center gap-2">
                 <i data-lucide="award" class="w-4 h-4"></i> Input Data Nilai
               </button>
-              <button type="button" onclick="uiState.activeTab='rapor'; renderApp();" class="px-4 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold flex items-center gap-2">
+              <button type="button" onclick="switchTab('rapor')" class="px-4 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold flex items-center gap-2">
                 <i data-lucide="printer" class="w-4 h-4"></i> Cetak Rapor Siswa
               </button>
             </div>
@@ -1701,7 +1815,7 @@
                 <div class="p-2.5 rounded-xl border border-emerald-100 bg-emerald-50/50 space-y-1.5">
                   <div class="flex items-center justify-between text-[11px]">
                     <span class="font-bold text-emerald-900">Ringkasan Kehadiran</span>
-                    <button type="button" onclick="uiState.absensiTanggal='${uiState.kalenderSelectedDate}'; uiState.absensiBulan='${uiState.kalenderSelectedDate.slice(0, 7)}'; uiState.activeTab='absensi'; renderApp();" class="font-bold text-emerald-700 hover:underline">Input Absensi &rarr;</button>
+                    <button type="button" onclick="uiState.absensiTanggal='${uiState.kalenderSelectedDate}'; uiState.absensiBulan='${uiState.kalenderSelectedDate.slice(0, 7)}'; switchTab('absensi');" class="font-bold text-emerald-700 hover:underline">Input Absensi &rarr;</button>
                   </div>
                   <div class="grid grid-cols-4 gap-1.5 text-center text-[11px]">
                     <div class="p-1.5 rounded-lg bg-white border border-slate-200"><div class="text-[10px] text-slate-500">Hadir</div><div class="font-extrabold text-emerald-700">${selHadir}</div></div>
@@ -1731,7 +1845,7 @@
                     <h3 class="font-heading font-extrabold text-sm text-slate-900 capitalize">Jadwal Hari ${esc(namaHariTerpilih || 'Pembelajaran')}</h3>
                     <div class="text-[11px] text-slate-500">${jadwalHariTerpilih.length ? `${jadwalHariTerpilih.length} mata pelajaran terjadwal` : 'Tidak ada jadwal khusus hari ini'}</div>
                   </div>
-                  <button type="button" onclick="uiState.activeTab='jadwal'; renderApp();" class="text-xs font-bold text-emerald-700">Semua</button>
+                  <button type="button" onclick="switchTab('jadwal')" class="text-xs font-bold text-emerald-700">Semua</button>
                 </div>
                 <div class="space-y-2">
                   ${(jadwalHariTerpilih.length ? jadwalHariTerpilih : appData.jadwalPelajaran.slice(0, 3)).map(j => `
@@ -2257,7 +2371,7 @@
                             </select>
                           </td>
                         `).join('')}
-                        <td class="px-3 py-2 text-[11px] text-slate-700">${esc(desc) || '<span class="text-slate-400 italic">Deskripsi terisi otomatis saat skor diisi...</span>'}</td>
+                        <td id="koku_desc_${s.id}" class="px-3 py-2 text-[11px] text-slate-700">${esc(desc) || '<span class="text-slate-400 italic">Deskripsi terisi otomatis saat skor diisi...</span>'}</td>
                       </tr>
                     `;
                   }).join('')}
@@ -2278,12 +2392,17 @@
     }
 
     function setSkorKokurikuler(siswaId, idx, val) {
-      const koku = getKokurikulerSemester(appData.profil.semesterAktif);
+      const sem = appData.profil.semesterAktif;
+      const koku = getKokurikulerSemester(sem);
       if (!koku.skor) koku.skor = {};
       if (!koku.skor[siswaId]) koku.skor[siswaId] = [];
       koku.skor[siswaId][idx] = val === '' ? '' : Number(val);
       saveAppData(true);
-      renderApp();
+      const descCell = document.getElementById(`koku_desc_${siswaId}`);
+      if (descCell) {
+        const desc = generateDeskripsiKokurikuler(siswaId, sem);
+        descCell.innerHTML = esc(desc) || '<span class="text-slate-400 italic">Deskripsi terisi otomatis saat skor diisi...</span>';
+      }
     }
 
     function renderEkskulPage() {
@@ -3015,7 +3134,10 @@
       if (taEl) taEl.textContent = appData.profil.tahunAjaran;
       if (semEl) semEl.value = appData.profil.semesterAktif;
       if (orientEl) orientEl.value = appData.printOrientation || 'portrait';
-      updateSyncIndicator(uiState.syncState === 'idle' ? 'synced' : uiState.syncState);
+
+      if (uiState.syncState !== 'loading' && uiState.syncState !== 'syncing') {
+        updateSyncIndicator(uiState.hasUnsavedCloudChanges ? 'unsaved_cloud' : uiState.syncState);
+      }
 
       const container = document.getElementById('appContent');
       if (!container) return;
@@ -3300,7 +3422,7 @@
     }
 
     // ========================================================================
-    // 10. MODAL PENGATURAN URL, MULTI-DEVICE AUTO-LOAD & SINKRON GAS
+    // 10. MODAL PENGATURAN URL, MULTI-DEVICE AUTO-LOAD & SAVE DATA KE GAS
     // ========================================================================
     function closeModal() {
       const modal = document.getElementById('modalContainer');
@@ -3334,14 +3456,14 @@
         <div class="fixed inset-0 z-50 bg-slate-900/60 flex items-center justify-center p-4">
           <div class="bg-white rounded-2xl max-w-md w-full p-5 space-y-4 shadow-xl">
             <div class="flex items-center justify-between">
-              <h3 class="font-heading font-extrabold text-base text-slate-900">Pengaturan URL &amp; Sinkron Lintas Perangkat</h3>
+              <h3 class="font-heading font-extrabold text-base text-slate-900">Pengaturan URL &amp; Penyimpanan Cloud</h3>
               <button type="button" onclick="closeModal()" class="p-1 text-slate-400 hover:text-slate-700"><i data-lucide="x" class="w-4 h-4"></i></button>
             </div>
-            <p class="text-xs text-slate-600">Masukkan URL Web App Google Apps Script agar data terakhir otomatis dimuat saat membuka aplikasi di laptop, HP, atau perangkat lain.</p>
+            <p class="text-xs text-slate-600">Masukkan URL Web App Google Apps Script. Perubahan dicatat secara lokal secara instan agar ringan tanpa lag, lalu klik <strong>Save Data</strong> kapan saja untuk menyimpan ke Google Spreadsheet.</p>
             <input type="url" id="inputGasUrl" value="${esc(appData.gasUrl)}" placeholder="https://script.google.com/macros/s/.../exec" class="w-full px-3 py-2 text-xs border border-slate-300 rounded-xl" />
             <label class="flex items-center gap-2 text-xs font-bold text-slate-700 cursor-pointer">
-              <input type="checkbox" id="inputAutoSync" ${appData.autoSync !== false ? 'checked' : ''} class="rounded text-emerald-600" />
-              <span>Sinkronisasi otomatis setiap kali ada perubahan data</span>
+              <input type="checkbox" id="inputAutoSync" ${appData.autoSync === true ? 'checked' : ''} class="rounded text-emerald-600" />
+              <span>Aktifkan auto-sync ke server (opsional — matikan agar bebas lag saat input catatan/nilai)</span>
             </label>
             ${shareLink ? `
               <div class="p-3 rounded-xl border border-emerald-200 bg-emerald-50/70 space-y-1.5">
@@ -3413,10 +3535,9 @@
           const localUpdatedAt = Number(appData.updatedAt) || 0;
           const remoteUpdatedAt = Number(remote.updatedAt) || 0;
 
-          // Jika ada perubahan lokal yang belum tersinkron dan jelas lebih baru saat auto-load senyap, kirim lokal ke cloud
           if (silent && localUpdatedAt > 0 && remoteUpdatedAt > 0 && localUpdatedAt > remoteUpdatedAt && localStorage.getItem(STORAGE_KEY)) {
-            updateSyncIndicator('synced');
-            syncToGas(true);
+            uiState.hasUnsavedCloudChanges = true;
+            updateSyncIndicator('unsaved_cloud');
             return;
           }
 
@@ -3428,15 +3549,10 @@
           if (!mergedLogos.logoDinas && appData.logos?.logoDinas) mergedLogos.logoDinas = appData.logos.logoDinas;
           if (!mergedLogos.logoSekolah && appData.logos?.logoSekolah) mergedLogos.logoSekolah = appData.logos.logoSekolah;
 
-          appData = {
-            ...JSON.parse(JSON.stringify(DEFAULT_APP_DATA)),
-            ...remote,
-            gasUrl: targetUrl,
-            autoSync: appData.autoSync !== false,
-            logos: mergedLogos,
-            profil: { ...DEFAULT_APP_DATA.profil, ...(remote.profil || {}) },
-            bobotNilai: { ...DEFAULT_APP_DATA.bobotNilai, ...(remote.bobotNilai || {}) }
-          };
+          const prevAutoSync = appData.autoSync === true;
+          appData = normalizeLoadedData(remote, targetUrl);
+          appData.autoSync = prevAutoSync;
+          appData.logos = mergedLogos;
 
           const now = new Date();
           appData.lastSyncTime = `${String(now.getHours()).padStart(2, '0')}.${String(now.getMinutes()).padStart(2, '0')}`;
@@ -3449,7 +3565,11 @@
           if (!appData.siswa.some(s => s.id === uiState.selected7KaihSiswaId) && appData.siswa.length) {
             uiState.selected7KaihSiswaId = appData.siswa[0].id;
           }
+          if (!appData.mapel.some(m => m.id === uiState.selectedMapelId) && appData.mapel.length) {
+            uiState.selectedMapelId = appData.mapel[0].id;
+          }
 
+          uiState.hasUnsavedCloudChanges = false;
           updateSyncIndicator('synced');
           renderApp();
           if (!silent) {
@@ -3457,7 +3577,7 @@
             showToast('Data terakhir berhasil dimuat dari Spreadsheet!');
           }
         } else {
-          updateSyncIndicator('synced');
+          updateSyncIndicator(uiState.hasUnsavedCloudChanges ? 'unsaved_cloud' : 'local_saved');
           if (!silent) {
             showToast(json.message || 'Belum ada data cadangan di Spreadsheet.', 'warning');
           }
@@ -3469,6 +3589,7 @@
     }
 
     async function syncToGas(silent = false) {
+      if (uiState.isSyncingNow) return;
       if (!appData.gasUrl) {
         if (!silent) {
           openGasModal();
@@ -3476,10 +3597,14 @@
         }
         return;
       }
+
+      uiState.isSyncingNow = true;
       try {
         updateSyncIndicator('syncing');
-        if (!silent) showToast('Menyinkronkan data ke Spreadsheet...');
+        if (!silent) showToast('Menyimpan data ke Google Spreadsheet...');
         appData.updatedAt = Date.now();
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(appData));
+
         const payload = { ...appData, logos: { logoDinas: '', logoSekolah: '' } };
         const res = await fetch(appData.gasUrl, {
           method: 'POST',
@@ -3491,16 +3616,19 @@
           const now = new Date();
           appData.lastSyncTime = `${String(now.getHours()).padStart(2, '0')}.${String(now.getMinutes()).padStart(2, '0')}`;
           localStorage.setItem(STORAGE_KEY, JSON.stringify(appData));
+          uiState.hasUnsavedCloudChanges = false;
           updateSyncIndicator('synced');
-          renderApp();
-          if (!silent) showToast('Sinkronisasi Spreadsheet berhasil!');
+          if (!silent) showToast('Save Data berhasil! Seluruh data tersimpan di Spreadsheet.');
         } else {
-          updateSyncIndicator('offline', 'Gagal Sinkron');
-          if (!silent) showToast(json.message || 'Gagal sinkronisasi.', 'error');
+          updateSyncIndicator('offline', 'Gagal Save Data');
+          if (!silent) showToast(json.message || 'Gagal menyimpan ke server.', 'error');
         }
       } catch (err) {
         updateSyncIndicator('offline', 'Gagal Terhubung');
         if (!silent) showToast('Gagal terhubung ke URL Google Apps Script.', 'error');
+      } finally {
+        uiState.isSyncingNow = false;
+        updateSyncIndicator(uiState.hasUnsavedCloudChanges ? 'unsaved_cloud' : uiState.syncState);
       }
     }
 
