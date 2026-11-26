@@ -272,7 +272,7 @@
 
     const DEFAULT_APP_DATA = {
       gasUrl: DEFAULT_GAS_URL,
-      autoSync: false, // Default manual Save Data agar tidak lag saat input catatan/nilai
+      autoSync: false,
       lastSyncTime: '',
       updatedAt: 0,
       printOrientation: 'portrait',
@@ -281,8 +281,7 @@
         namaSekolah: 'SD Negeri Bojongkacor 02',
         npsn: '20206875',
         alamatSekolah: 'Jl. Parakan Panjang No. 6, Bandung',
-        dinasPendidikan: 'PEMERINTAH KOTA BANDUNG
-DINAS PENDIDIKAN',
+        dinasPendidikan: 'PEMERINTAH KOTA BANDUNG\nDINAS PENDIDIKAN',
         namaGuru: 'Yoga Hari Setia, S.Pd.',
         jenisIdGuru: 'NIP',
         nipGuru: '7150775676130093',
@@ -466,7 +465,6 @@ DINAS PENDIDIKAN',
       }
     };
 
-    // Normalisasi struktur array & objek agar tidak pernah undefined/null setelah load dari Cloud
     function normalizeLoadedData(rawParsed, resolvedGas) {
       const base = JSON.parse(JSON.stringify(DEFAULT_APP_DATA));
       const parsed = rawParsed || {};
@@ -474,7 +472,7 @@ DINAS PENDIDIKAN',
         ...base,
         ...parsed,
         gasUrl: resolvedGas,
-        autoSync: parsed.autoSync === true, // Pertahankan mode manual Save Data secara default
+        autoSync: parsed.autoSync === true,
         logos: { ...base.logos, ...(parsed.logos || {}) },
         profil: { ...base.profil, ...(parsed.profil || {}) },
         bobotNilai: { ...base.bobotNilai, ...(parsed.bobotNilai || {}) },
@@ -536,9 +534,9 @@ DINAS PENDIDIKAN',
       searchQuery: '',
       selectedMapelId: appData.mapel[2]?.id || appData.mapel[0]?.id || 'MAP-1',
       nilaiSubTab: 'kognitif',
-      pengolahanSubTab: 'mapel', // 'mapel' | 'leger'
-      pengolahanSortMode: 'absen', // 'absen' | 'ranking'
-      legerSortMode: 'ranking', // 'ranking' | 'absen'
+      pengolahanSubTab: 'mapel',
+      pengolahanSortMode: 'absen',
+      legerSortMode: 'ranking',
       absensiTanggal: _todayInitStr,
       absensiBulan: _todayInitStr.slice(0, 7),
       kalenderTahun: _nowInit.getFullYear(),
@@ -552,7 +550,7 @@ DINAS PENDIDIKAN',
       selected7KaihSiswaId: appData.siswa[0]?.id || '',
       selectedRaporSiswaId: appData.siswa[0]?.id || '',
       printAllRaporMode: false,
-      syncState: 'local_saved', // 'local_saved' | 'unsaved_cloud' | 'loading' | 'syncing' | 'synced' | 'offline'
+      syncState: 'local_saved',
       hasUnsavedCloudChanges: false,
       isSyncingNow: false
     };
@@ -560,7 +558,6 @@ DINAS PENDIDIKAN',
     let autoSyncTimer = null;
     let searchDebounceTimer = null;
 
-    // Debounce pencarian global agar mengetik tidak merender ulang seluruh DOM tiap 1 huruf secara berat
     function handleGlobalSearch(val) {
       uiState.searchQuery = val;
       if (searchDebounceTimer) clearTimeout(searchDebounceTimer);
@@ -569,7 +566,6 @@ DINAS PENDIDIKAN',
       }, 180);
     }
 
-    // Perpindahan tab yang terisolasi bersih dan reset state sementara
     function switchTab(tabId) {
       uiState.activeTab = tabId;
       uiState.printAllRaporMode = false;
@@ -640,7 +636,6 @@ DINAS PENDIDIKAN',
       }
     }
 
-    // Simpan ke localStorage secara instan (0 ms) tanpa membebani server GAS setiap input
     function saveAppData(silent = false) {
       try {
         appData.updatedAt = Date.now();
@@ -775,7 +770,7 @@ DINAS PENDIDIKAN',
           th, td { border: 1px solid #333; padding: 5px; }
           table.no-border th, table.no-border td { border: none; }
         </style></head><body>`;
-      const blob = new Blob(['﻿', header + htmlContent + '</body></html>'], { type: 'application/msword' });
+      const blob = new Blob(['\ufeff', header + htmlContent + '</body></html>'], { type: 'application/msword' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
@@ -1112,7 +1107,6 @@ DINAS PENDIDIKAN',
       saveAppData(true);
     }
 
-    // Update sel konversi langsung di DOM tanpa merender ulang seluruh tabel 41 siswa (menghilangkan lag)
     function updateNilaiSkala14(tipe, siswaId, indKey, val) {
       const sem = appData.profil.semesterAktif;
       const mapelId = uiState.selectedMapelId;
@@ -1477,15 +1471,15 @@ DINAS PENDIDIKAN',
                   ${appData.mapel.map(m => `<option value="${m.id}" ${m.id === mapel?.id ? 'selected' : ''}>${esc(m.nama)}</option>`).join('')}
                 </select>
                 <div class="inline-flex p-1 rounded-xl bg-slate-100 border border-slate-200 gap-1">
-                  <button type="button" onclick="uiState.pengolahanSortMode='absen'; renderApp();" class="px-3 py-1.5 rounded-lg text-xs font-bold ${uiState.pengolahanSortMode === 'absen' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-600'}">Urutkan: Absen</button>
-                  <button type="button" onclick="uiState.pengolahanSortMode='ranking'; renderApp();" class="px-3 py-1.5 rounded-lg text-xs font-bold ${uiState.pengolahanSortMode === 'ranking' ? 'bg-emerald-700 text-white shadow-sm' : 'text-slate-600'}">Urutkan: Peringkat Tertinggi</button>
+                  <button type="button" onclick="uiState.pengolahanSortMode='absen'; renderApp();" class="px-3.5 py-1.5 rounded-lg text-xs font-bold ${uiState.pengolahanSortMode === 'absen' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-600'}">Urutkan: Absen</button>
+                  <button type="button" onclick="uiState.pengolahanSortMode='ranking'; renderApp();" class="px-3.5 py-1.5 rounded-lg text-xs font-bold ${uiState.pengolahanSortMode === 'ranking' ? 'bg-emerald-700 text-white shadow-sm' : 'text-slate-600'}">Urutkan: Peringkat Tertinggi</button>
                 </div>
                 <button type="button" onclick="exportNilaiExcel()" class="px-3.5 py-2 rounded-xl bg-emerald-700 text-white text-xs font-bold">Export Excel</button>
                 <button type="button" onclick="window.print()" class="px-3.5 py-2 rounded-xl bg-slate-900 text-white text-xs font-bold">Cetak Rekap</button>
               ` : `
                 <div class="inline-flex p-1 rounded-xl bg-slate-100 border border-slate-200 gap-1">
-                  <button type="button" onclick="uiState.legerSortMode='ranking'; renderApp();" class="px-3 py-1.5 rounded-lg text-xs font-bold ${uiState.legerSortMode === 'ranking' ? 'bg-emerald-700 text-white shadow-sm' : 'text-slate-600'}">Urutkan: Peringkat #1</button>
-                  <button type="button" onclick="uiState.legerSortMode='absen'; renderApp();" class="px-3 py-1.5 rounded-lg text-xs font-bold ${uiState.legerSortMode === 'absen' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-600'}">Urutkan: Absen</button>
+                  <button type="button" onclick="uiState.legerSortMode='ranking'; renderApp();" class="px-3.5 py-1.5 rounded-lg text-xs font-bold ${uiState.legerSortMode === 'ranking' ? 'bg-emerald-700 text-white shadow-sm' : 'text-slate-600'}">Urutkan: Peringkat #1</button>
+                  <button type="button" onclick="uiState.legerSortMode='absen'; renderApp();" class="px-3.5 py-1.5 rounded-lg text-xs font-bold ${uiState.legerSortMode === 'absen' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-600'}">Urutkan: Absen</button>
                 </div>
                 <button type="button" onclick="exportLegerExcel()" class="px-3.5 py-2 rounded-xl bg-emerald-700 text-white text-xs font-bold">Export Leger Excel</button>
                 <button type="button" onclick="cetakLegerKelas()" class="px-3.5 py-2 rounded-xl bg-slate-900 text-white text-xs font-bold flex items-center gap-1.5">
