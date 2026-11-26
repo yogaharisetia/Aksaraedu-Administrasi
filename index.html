@@ -198,7 +198,7 @@
 
             <!-- Status Sinkron -->
             <div id="syncStatusPill" class="hidden sm:flex items-center gap-1.5 px-3 py-2 rounded-xl border border-emerald-200 bg-emerald-50 text-emerald-800 text-xs font-bold">
-              <span class="w-2 h-2 rounded-full bg-emerald-500"></span>
+              <span id="syncStatusDot" class="w-2 h-2 rounded-full bg-emerald-500"></span>
               <span id="syncStatusText">Tersinkron</span>
             </div>
 
@@ -228,6 +228,8 @@
     // 0. STATE DATA UTAMA, KONSTANTA INDIKATOR & HELPER INTI
     // ========================================================================
     const STORAGE_KEY = 'aksraeduadm_final_v1';
+    const GAS_URL_KEY = 'aksraeduadm_gas_url_v1';
+    const DEFAULT_GAS_URL = ''; // Opsional: tempel URL Web App GAS di sini agar otomatis aktif di semua perangkat tanpa input manual
 
     function getTodayLocalStr() {
       const d = new Date();
@@ -269,8 +271,10 @@
     ];
 
     const DEFAULT_APP_DATA = {
-      gasUrl: '',
+      gasUrl: DEFAULT_GAS_URL,
+      autoSync: true,
       lastSyncTime: '23.15',
+      updatedAt: 0,
       printOrientation: 'portrait',
       logos: { logoDinas: '', logoSekolah: '' },
       profil: {
@@ -461,20 +465,41 @@
       }
     };
 
+    function getUrlParamGas() {
+      try {
+        const params = new URLSearchParams(window.location.search);
+        return (params.get('gas') || params.get('gasUrl') || '').trim();
+      } catch (e) {
+        return '';
+      }
+    }
+
     function loadAppData() {
+      const paramGas = getUrlParamGas();
+      const storedGas = (localStorage.getItem(GAS_URL_KEY) || '').trim();
       try {
         const raw = localStorage.getItem(STORAGE_KEY);
-        if (!raw) return JSON.parse(JSON.stringify(DEFAULT_APP_DATA));
+        if (!raw) {
+          const fresh = JSON.parse(JSON.stringify(DEFAULT_APP_DATA));
+          fresh.gasUrl = paramGas || storedGas || DEFAULT_GAS_URL;
+          if (fresh.gasUrl) localStorage.setItem(GAS_URL_KEY, fresh.gasUrl);
+          return fresh;
+        }
         const parsed = JSON.parse(raw);
+        const resolvedGas = paramGas || (parsed.gasUrl || '').trim() || storedGas || DEFAULT_GAS_URL;
+        if (resolvedGas) localStorage.setItem(GAS_URL_KEY, resolvedGas);
         return {
           ...JSON.parse(JSON.stringify(DEFAULT_APP_DATA)),
           ...parsed,
+          gasUrl: resolvedGas,
           logos: { ...DEFAULT_APP_DATA.logos, ...(parsed.logos || {}) },
           profil: { ...DEFAULT_APP_DATA.profil, ...(parsed.profil || {}) },
           bobotNilai: { ...DEFAULT_APP_DATA.bobotNilai, ...(parsed.bobotNilai || {}) }
         };
       } catch (e) {
-        return JSON.parse(JSON.stringify(DEFAULT_APP_DATA));
+        const fallback = JSON.parse(JSON.stringify(DEFAULT_APP_DATA));
+        fallback.gasUrl = paramGas || storedGas || DEFAULT_GAS_URL;
+        return fallback;
       }
     }
 
@@ -488,7 +513,9 @@
       searchQuery: '',
       selectedMapelId: appData.mapel[2]?.id || appData.mapel[0]?.id || 'MAP-1',
       nilaiSubTab: 'kognitif',
+      pengolahanSubTab: 'mapel', // 'mapel' | 'leger'
       pengolahanSortMode: 'absen', // 'absen' | 'ranking'
+      legerSortMode: 'ranking', // 'ranking' | 'absen'
       absensiTanggal: _todayInitStr,
       absensiBulan: _todayInitStr.slice(0, 7),
       kalenderTahun: _nowInit.getFullYear(),
@@ -501,16 +528,58 @@
       poinSelectedSiswaIds: [],
       selected7KaihSiswaId: appData.siswa[0]?.id || '',
       selectedRaporSiswaId: appData.siswa[0]?.id || '',
-      printAllRaporMode: false
+      printAllRaporMode: false,
+      syncState: 'idle' // 'idle' | 'loading' | 'syncing' | 'synced' | 'offline'
     };
+
+    let autoSyncTimer = null;
+
+    function updateSyncIndicator(state, customText) {
+      uiState.syncState = state;
+      const dot = document.getElementById('syncStatusDot');
+      const txt = document.getElementById('syncStatusText');
+      if (!txt) return;
+      if (dot) {
+        dot.className = 'w-2 h-2 rounded-full ' + (
+          state === 'loading' || state === 'syncing' ? 'bg-amber-500 animate-pulse'
+          : state === 'offline' ? 'bg-rose-500'
+          : 'bg-emerald-500'
+        );
+      }
+      if (customText) {
+        txt.textContent = customText;
+      } else if (state === 'loading') {
+        txt.textContent = 'Memuat Cloud...';
+      } else if (state === 'syncing') {
+        txt.textContent = 'Menyinkronkan...';
+      } else if (state === 'offline') {
+        txt.textContent = 'Lokal (Belum Sinkron)';
+      } else {
+        txt.textContent = `Tersinkron (${appData.lastSyncTime || '23.15'})`;
+      }
+    }
 
     function saveAppData(silent = false) {
       try {
+        appData.updatedAt = Date.now();
+        if (appData.gasUrl) {
+          localStorage.setItem(GAS_URL_KEY, appData.gasUrl.trim());
+        }
         localStorage.setItem(STORAGE_KEY, JSON.stringify(appData));
         if (!silent) showToast('Perubahan disimpan.');
+        scheduleAutoSyncToGas();
       } catch (e) {
         showToast('Gagal menyimpan ke penyimpanan lokal browser.', 'error');
       }
+    }
+
+    function scheduleAutoSyncToGas() {
+      if (!appData.gasUrl || appData.autoSync === false) return;
+      updateSyncIndicator('offline', 'Menunggu Sinkron...');
+      if (autoSyncTimer) clearTimeout(autoSyncTimer);
+      autoSyncTimer = setTimeout(() => {
+        syncToGas(true);
+      }, 2500);
     }
 
     function esc(str) {
@@ -624,7 +693,7 @@
     }
 
     // ========================================================================
-    // ENGINE PERHITUNGAN NILAI (KOGNITIF, PSIKOMOTOR, AFEKTIF & 7KAIH)
+    // ENGINE PERHITUNGAN NILAI (KOGNITIF, PSIKOMOTOR, AFEKTIF, 7KAIH & LEGER)
     // ========================================================================
     function cleanTpDeskripsi(text) {
       return String(text || '').trim().replace(/\.+$/, '');
@@ -686,7 +755,6 @@
 
         deskripsiBaik = `Ananda menunjukkan pemahaman sangat baik dalam ${tpTertinggi.join('; ')}.`;
 
-        // Pengecualian mutlak: jika nilai terendah = 100 (semua TP bernilai 100), tidak perlu mencantumkan perlu bimbingan
         if (minAvg < 100) {
           const tpTerendah = tpScores
             .filter(item => Math.abs(item.avg - minAvg) < 0.0001)
@@ -698,6 +766,54 @@
       }
 
       return { kognitif, psikomotor, afektif, nilaiAkhir, deskripsiBaik, deskripsiPerluBimbingan };
+    }
+
+    function hitungLegerKelas(sem) {
+      const records = appData.siswa.map(s => {
+        const nilaiPerMapel = {};
+        let totalNilai = 0;
+        let jumlahMapelDinilai = 0;
+
+        appData.mapel.forEach(m => {
+          const h = hitungNilaiMapelSiswa(s.id, m.id, sem);
+          nilaiPerMapel[m.id] = h.nilaiAkhir;
+          if (h.nilaiAkhir !== null && h.nilaiAkhir !== undefined) {
+            totalNilai += h.nilaiAkhir;
+            jumlahMapelDinilai++;
+          }
+        });
+
+        const rataRata = jumlahMapelDinilai > 0 ? Number((totalNilai / jumlahMapelDinilai).toFixed(2)) : null;
+        return {
+          siswa: s,
+          nilaiPerMapel,
+          totalNilai: jumlahMapelDinilai > 0 ? totalNilai : null,
+          jumlahMapelDinilai,
+          rataRata,
+          peringkat: null
+        };
+      });
+
+      const rankedList = records
+        .filter(r => r.totalNilai !== null)
+        .sort((a, b) => {
+          if (b.totalNilai !== a.totalNilai) return b.totalNilai - a.totalNilai;
+          return (b.rataRata || 0) - (a.rataRata || 0);
+        });
+
+      let currentRank = 0;
+      let prevTotal = null;
+      rankedList.forEach((item, idx) => {
+        if (prevTotal === null || item.totalNilai < prevTotal) {
+          currentRank = idx + 1;
+          prevTotal = item.totalNilai;
+        }
+        item.peringkat = currentRank;
+      });
+
+      const bySiswaId = {};
+      records.forEach(r => { bySiswaId[r.siswa.id] = r; });
+      return { records, bySiswaId };
     }
 
     function hitung7KaihSiswa(siswaId, semester) {
@@ -1020,6 +1136,38 @@
       exportTableToExcel(`Rekap_Nilai_${mapel.nama}_${sem}`, rows);
     }
 
+    function exportLegerExcel() {
+      const sem = appData.profil.semesterAktif;
+      const leger = hitungLegerKelas(sem);
+      const baseList = uiState.legerSortMode === 'ranking'
+        ? [...appData.siswa].sort((a, b) => (leger.bySiswaId[a.id]?.peringkat ?? 9999) - (leger.bySiswaId[b.id]?.peringkat ?? 9999))
+        : appData.siswa;
+
+      const rows = baseList.map((s, idx) => {
+        const rec = leger.bySiswaId[s.id] || { nilaiPerMapel: {}, totalNilai: null, rataRata: null, peringkat: null };
+        const row = {
+          No: idx + 1,
+          NISN: s.nisn,
+          Nama_Peserta_Didik: s.nama
+        };
+        appData.mapel.forEach(m => {
+          row[m.nama] = rec.nilaiPerMapel[m.id] ?? '';
+        });
+        row.Total_Nilai_Rapor = rec.totalNilai ?? '';
+        row.Rata_Rata = rec.rataRata ?? '';
+        row.Peringkat_Kelas = rec.peringkat ?? '-';
+        return row;
+      });
+      exportTableToExcel(`Leger_Peringkat_Kelas_${appData.profil.kelasAktif}_${sem}`, rows);
+    }
+
+    function cetakLegerKelas() {
+      setPrintOrientation('landscape');
+      const orientEl = document.getElementById('topbarPrintOrientSelect');
+      if (orientEl) orientEl.value = 'landscape';
+      setTimeout(() => window.print(), 150);
+    }
+
     function downloadNilaiWord() {
       const el = document.getElementById('nilaiTableArea');
       const mapel = appData.mapel.find(m => m.id === uiState.selectedMapelId);
@@ -1120,89 +1268,158 @@
     }
 
     // ========================================================================
-    // HALAMAN PENGOLAHAN NILAI RAPOR (DENGAN URUTAN RANKING / PERINGKAT)
+    // HALAMAN PENGOLAHAN NILAI RAPOR & LEGER PERINGKAT KELAS
     // ========================================================================
+    function renderRankBadge(rank) {
+      if (rank === 1) {
+        return `<span class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-amber-100 border border-amber-300 text-amber-900 font-extrabold text-[11px]">#1</span>`;
+      } else if (rank === 2) {
+        return `<span class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-slate-200 border border-slate-300 text-slate-800 font-extrabold text-[11px]">#2</span>`;
+      } else if (rank === 3) {
+        return `<span class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-orange-100 border border-orange-300 text-orange-900 font-extrabold text-[11px]">#3</span>`;
+      } else if (rank) {
+        return `<span class="inline-flex items-center px-2.5 py-0.5 rounded-full bg-emerald-50 text-emerald-800 font-bold text-[11px]">#${rank}</span>`;
+      }
+      return `<span class="text-slate-400 font-bold">-</span>`;
+    }
+
+    function renderLegerPeringkatSection(sem, filtered) {
+      const leger = hitungLegerKelas(sem);
+      const students = uiState.legerSortMode === 'ranking'
+        ? [...filtered].sort((a, b) => (leger.bySiswaId[a.id]?.peringkat ?? 9999) - (leger.bySiswaId[b.id]?.peringkat ?? 9999))
+        : filtered;
+
+      return `
+        <div class="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+          <div class="overflow-x-auto">
+            <table class="rapor-table w-full text-xs text-left">
+              <thead class="bg-slate-900 text-white text-[11px]">
+                <tr>
+                  <th class="px-2.5 py-3 text-center w-10">No</th>
+                  <th class="px-3 py-3 min-w-[180px]">Nama Peserta Didik</th>
+                  ${appData.mapel.map(m => `
+                    <th class="px-2 py-3 text-center min-w-[72px]" title="${esc(m.nama)}">
+                      <div class="leading-tight">${esc(m.nama)}</div>
+                    </th>
+                  `).join('')}
+                  <th class="px-3 py-3 text-center bg-emerald-950 w-24">Total Nilai</th>
+                  <th class="px-3 py-3 text-center bg-emerald-900 w-24">Rata-Rata</th>
+                  <th class="px-3 py-3 text-center bg-amber-900 w-24">Peringkat</th>
+                </tr>
+              </thead>
+              <tbody class="divide-y divide-slate-200">
+                ${students.map((s, idx) => {
+                  const rec = leger.bySiswaId[s.id] || { nilaiPerMapel: {}, totalNilai: null, rataRata: null, peringkat: null };
+                  return `
+                    <tr class="hover:bg-slate-50">
+                      <td class="px-2.5 py-2.5 text-center">${idx + 1}</td>
+                      <td class="px-3 py-2.5 font-bold text-slate-900 whitespace-nowrap">${esc(s.nama)}</td>
+                      ${appData.mapel.map(m => {
+                        const val = rec.nilaiPerMapel[m.id];
+                        return `<td class="px-2 py-2.5 text-center ${val !== null && val !== undefined ? 'font-semibold text-slate-800' : 'text-slate-400'}">${val ?? '-'}</td>`;
+                      }).join('')}
+                      <td class="px-3 py-2.5 text-center font-extrabold text-emerald-900 bg-emerald-50/50">${rec.totalNilai ?? '-'}</td>
+                      <td class="px-3 py-2.5 text-center font-bold text-slate-800">${rec.rataRata !== null ? rec.rataRata.toFixed(2) : '-'}</td>
+                      <td class="px-3 py-2.5 text-center">${renderRankBadge(rec.peringkat)}</td>
+                    </tr>
+                  `;
+                }).join('')}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      `;
+    }
+
     function renderPengolahanNilai() {
       const sem = appData.profil.semesterAktif;
       if (!appData.mapel.some(m => m.id === uiState.selectedMapelId) && appData.mapel.length) {
         uiState.selectedMapelId = appData.mapel[0].id;
       }
       const mapel = appData.mapel.find(m => m.id === uiState.selectedMapelId) || appData.mapel[0];
-      const rankMap = getRekapPengolahanMapel(mapel.id, sem);
+      const rankMap = mapel ? getRekapPengolahanMapel(mapel.id, sem) : {};
       const filtered = getFilteredStudents();
       const students = uiState.pengolahanSortMode === 'ranking'
         ? [...filtered].sort((a, b) => (rankMap[a.id] ?? 9999) - (rankMap[b.id] ?? 9999))
         : filtered;
       const b = appData.bobotNilai;
+      const isLeger = uiState.pengolahanSubTab === 'leger';
 
       return `
-        ${renderKopCetak(`Pengolahan Nilai Rapor — ${mapel?.nama || ''}`)}
+        ${renderKopCetak(isLeger ? 'Leger Nilai Rapor & Peringkat Kelas' : `Pengolahan Nilai Rapor — ${mapel?.nama || ''}`)}
         <div class="space-y-5">
           <div class="flex flex-wrap items-center justify-between gap-3 no-print">
             <div>
-              <h1 class="font-heading text-xl font-extrabold text-slate-900">Pengolahan Nilai Rapor</h1>
-              <p class="text-xs text-slate-500">Rekap otomatis Kognitif (${b.kognitif}%), Psikomotor (${b.psikomotor}%), dan Afektif (${b.afektif}%) beserta Peringkat / Ranking siswa.</p>
+              <h1 class="font-heading text-xl font-extrabold text-slate-900">Pengolahan Nilai Rapor &amp; Leger Kelas</h1>
+              <p class="text-xs text-slate-500">Rekap otomatis Kognitif (${b.kognitif}%), Psikomotor (${b.psikomotor}%), Afektif (${b.afektif}%), serta Leger Total Nilai seluruh mata pelajaran rapor.</p>
             </div>
             <div class="flex flex-wrap items-center gap-2">
-              <select onchange="uiState.selectedMapelId = this.value; renderApp();" class="px-3.5 py-2 text-xs font-bold border border-emerald-400 bg-emerald-50 text-emerald-950 rounded-xl">
-                ${appData.mapel.map(m => `<option value="${m.id}" ${m.id === mapel?.id ? 'selected' : ''}>${esc(m.nama)}</option>`).join('')}
-              </select>
               <div class="inline-flex p-1 rounded-xl bg-slate-100 border border-slate-200 gap-1">
-                <button type="button" onclick="uiState.pengolahanSortMode='absen'; renderApp();" class="px-3 py-1.5 rounded-lg text-xs font-bold ${uiState.pengolahanSortMode === 'absen' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-600'}">Urutkan: Absen</button>
-                <button type="button" onclick="uiState.pengolahanSortMode='ranking'; renderApp();" class="px-3 py-1.5 rounded-lg text-xs font-bold ${uiState.pengolahanSortMode === 'ranking' ? 'bg-emerald-700 text-white shadow-sm' : 'text-slate-600'}">Urutkan: Peringkat Tertinggi</button>
+                <button type="button" onclick="uiState.pengolahanSubTab='mapel'; renderApp();" class="px-3.5 py-1.5 rounded-lg text-xs font-bold ${!isLeger ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-600'}">Per Mata Pelajaran</button>
+                <button type="button" onclick="uiState.pengolahanSubTab='leger'; renderApp();" class="px-3.5 py-1.5 rounded-lg text-xs font-bold ${isLeger ? 'bg-emerald-700 text-white shadow-sm' : 'text-slate-600'}">Leger &amp; Peringkat Rapor</button>
               </div>
-              <button type="button" onclick="exportNilaiExcel()" class="px-3.5 py-2 rounded-xl bg-emerald-700 text-white text-xs font-bold">Export Excel</button>
-              <button type="button" onclick="window.print()" class="px-3.5 py-2 rounded-xl bg-slate-900 text-white text-xs font-bold">Cetak Rekap</button>
+              ${!isLeger ? `
+                <select onchange="uiState.selectedMapelId = this.value; renderApp();" class="px-3.5 py-2 text-xs font-bold border border-emerald-400 bg-emerald-50 text-emerald-950 rounded-xl">
+                  ${appData.mapel.map(m => `<option value="${m.id}" ${m.id === mapel?.id ? 'selected' : ''}>${esc(m.nama)}</option>`).join('')}
+                </select>
+                <div class="inline-flex p-1 rounded-xl bg-slate-100 border border-slate-200 gap-1">
+                  <button type="button" onclick="uiState.pengolahanSortMode='absen'; renderApp();" class="px-3 py-1.5 rounded-lg text-xs font-bold ${uiState.pengolahanSortMode === 'absen' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-600'}">Urutkan: Absen</button>
+                  <button type="button" onclick="uiState.pengolahanSortMode='ranking'; renderApp();" class="px-3 py-1.5 rounded-lg text-xs font-bold ${uiState.pengolahanSortMode === 'ranking' ? 'bg-emerald-700 text-white shadow-sm' : 'text-slate-600'}">Urutkan: Peringkat Tertinggi</button>
+                </div>
+                <button type="button" onclick="exportNilaiExcel()" class="px-3.5 py-2 rounded-xl bg-emerald-700 text-white text-xs font-bold">Export Excel</button>
+                <button type="button" onclick="window.print()" class="px-3.5 py-2 rounded-xl bg-slate-900 text-white text-xs font-bold">Cetak Rekap</button>
+              ` : `
+                <div class="inline-flex p-1 rounded-xl bg-slate-100 border border-slate-200 gap-1">
+                  <button type="button" onclick="uiState.legerSortMode='ranking'; renderApp();" class="px-3 py-1.5 rounded-lg text-xs font-bold ${uiState.legerSortMode === 'ranking' ? 'bg-emerald-700 text-white shadow-sm' : 'text-slate-600'}">Urutkan: Peringkat #1</button>
+                  <button type="button" onclick="uiState.legerSortMode='absen'; renderApp();" class="px-3 py-1.5 rounded-lg text-xs font-bold ${uiState.legerSortMode === 'absen' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-600'}">Urutkan: Absen</button>
+                </div>
+                <button type="button" onclick="exportLegerExcel()" class="px-3.5 py-2 rounded-xl bg-emerald-700 text-white text-xs font-bold">Export Leger Excel</button>
+                <button type="button" onclick="cetakLegerKelas()" class="px-3.5 py-2 rounded-xl bg-slate-900 text-white text-xs font-bold flex items-center gap-1.5">
+                  <i data-lucide="printer" class="w-3.5 h-3.5"></i> Cetak Leger &amp; TTD
+                </button>
+              `}
             </div>
           </div>
 
-          <div class="bg-white rounded-2xl border border-slate-200 overflow-hidden">
-            <div class="overflow-x-auto">
-              <table class="w-full text-xs text-left">
-                <thead class="bg-slate-900 text-white text-[11px]">
-                  <tr>
-                    <th class="px-3 py-3 text-center w-10">No</th>
-                    <th class="px-3 py-3 min-w-[180px]">Nama Peserta Didik</th>
-                    <th class="px-3 py-3 text-center">Kognitif (${b.kognitif}%)</th>
-                    <th class="px-3 py-3 text-center">Psikomotor (${b.psikomotor}%)</th>
-                    <th class="px-3 py-3 text-center">Afektif (${b.afektif}%)</th>
-                    <th class="px-3 py-3 text-center bg-emerald-950">Nilai Akhir Rapor</th>
-                    <th class="px-3 py-3 text-center bg-emerald-900 w-24">Peringkat</th>
-                    <th class="px-3 py-3 min-w-[240px]">Deskripsi Capaian Rapor</th>
-                  </tr>
-                </thead>
-                <tbody class="divide-y divide-slate-200">
-                  ${students.map((s, idx) => {
-                    const h = hitungNilaiMapelSiswa(s.id, mapel.id, sem);
-                    const rank = rankMap[s.id];
-                    let rankBadge = `<span class="text-slate-400 font-bold">-</span>`;
-                    if (rank === 1) {
-                      rankBadge = `<span class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-amber-100 border border-amber-300 text-amber-900 font-extrabold text-[11px]">#1</span>`;
-                    } else if (rank === 2) {
-                      rankBadge = `<span class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-slate-200 border border-slate-300 text-slate-800 font-extrabold text-[11px]">#2</span>`;
-                    } else if (rank === 3) {
-                      rankBadge = `<span class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-orange-100 border border-orange-300 text-orange-900 font-extrabold text-[11px]">#3</span>`;
-                    } else if (rank) {
-                      rankBadge = `<span class="inline-flex items-center px-2.5 py-0.5 rounded-full bg-emerald-50 text-emerald-800 font-bold text-[11px]">#${rank}</span>`;
-                    }
-                    const fullDesc = [h.deskripsiBaik, h.deskripsiPerluBimbingan].filter(Boolean).join(' ');
-                    return `
-                      <tr>
-                        <td class="px-3 py-2.5 text-center">${idx + 1}</td>
-                        <td class="px-3 py-2.5 font-bold text-slate-900">${esc(s.nama)}</td>
-                        <td class="px-3 py-2.5 text-center">${h.kognitif ?? '-'}</td>
-                        <td class="px-3 py-2.5 text-center">${h.psikomotor ?? '-'}</td>
-                        <td class="px-3 py-2.5 text-center">${h.afektif ?? '-'}</td>
-                        <td class="px-3 py-2.5 text-center font-extrabold text-emerald-800">${h.nilaiAkhir ?? '-'}</td>
-                        <td class="px-3 py-2.5 text-center">${rankBadge}</td>
-                        <td class="px-3 py-2.5 text-[11px] text-slate-600">${esc(fullDesc)}</td>
-                      </tr>
-                    `;
-                  }).join('')}
-                </tbody>
-              </table>
+          ${isLeger ? renderLegerPeringkatSection(sem, filtered) : `
+            <div class="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+              <div class="overflow-x-auto">
+                <table class="w-full text-xs text-left">
+                  <thead class="bg-slate-900 text-white text-[11px]">
+                    <tr>
+                      <th class="px-3 py-3 text-center w-10">No</th>
+                      <th class="px-3 py-3 min-w-[180px]">Nama Peserta Didik</th>
+                      <th class="px-3 py-3 text-center">Kognitif (${b.kognitif}%)</th>
+                      <th class="px-3 py-3 text-center">Psikomotor (${b.psikomotor}%)</th>
+                      <th class="px-3 py-3 text-center">Afektif (${b.afektif}%)</th>
+                      <th class="px-3 py-3 text-center bg-emerald-950">Nilai Akhir Rapor</th>
+                      <th class="px-3 py-3 text-center bg-emerald-900 w-24">Peringkat</th>
+                      <th class="px-3 py-3 min-w-[240px]">Deskripsi Capaian Rapor</th>
+                    </tr>
+                  </thead>
+                  <tbody class="divide-y divide-slate-200">
+                    ${students.map((s, idx) => {
+                      const h = hitungNilaiMapelSiswa(s.id, mapel.id, sem);
+                      const rank = rankMap[s.id];
+                      const fullDesc = [h.deskripsiBaik, h.deskripsiPerluBimbingan].filter(Boolean).join(' ');
+                      return `
+                        <tr>
+                          <td class="px-3 py-2.5 text-center">${idx + 1}</td>
+                          <td class="px-3 py-2.5 font-bold text-slate-900">${esc(s.nama)}</td>
+                          <td class="px-3 py-2.5 text-center">${h.kognitif ?? '-'}</td>
+                          <td class="px-3 py-2.5 text-center">${h.psikomotor ?? '-'}</td>
+                          <td class="px-3 py-2.5 text-center">${h.afektif ?? '-'}</td>
+                          <td class="px-3 py-2.5 text-center font-extrabold text-emerald-800">${h.nilaiAkhir ?? '-'}</td>
+                          <td class="px-3 py-2.5 text-center">${renderRankBadge(rank)}</td>
+                          <td class="px-3 py-2.5 text-[11px] text-slate-600">${esc(fullDesc)}</td>
+                        </tr>
+                      `;
+                    }).join('')}
+                  </tbody>
+                </table>
+              </div>
             </div>
-          </div>
+          `}
         </div>
         ${renderTandaTanganCetak()}
       `;
@@ -1241,7 +1458,9 @@
       const labelIdGuru = p.jenisIdGuru || 'NIP';
       const valIdGuru = labelIdGuru === 'NUPTK' ? (p.nuptkGuru || p.nipGuru || '-') : (p.nipGuru || '-');
       const kota = p.alamatSekolah.split(',').pop()?.trim() || 'Bandung';
-      const tgl = new Date().toLocaleDateString('id-ID', { day: 'numeric', month: 'long', year: 'numeric' });
+      const tgl = p.tanggalRapor
+        ? new Date(p.tanggalRapor).toLocaleDateString('id-ID', { day: 'numeric', month: 'long', year: 'numeric' })
+        : new Date().toLocaleDateString('id-ID', { day: 'numeric', month: 'long', year: 'numeric' });
       return `
         <div class="print-only-block mt-6 text-xs text-slate-900 page-break-inside-avoid">
           <div class="grid grid-cols-2 gap-8 text-center">
@@ -1290,7 +1509,7 @@
           title: 'AKADEMIK & PENILAIAN',
           items: [
             { id: 'nilai', label: 'Data Nilai', icon: 'award' },
-            { id: 'pengolahan', label: 'Pengolahan Nilai', icon: 'calculator' },
+            { id: 'pengolahan', label: 'Pengolahan Nilai & Leger', icon: 'calculator' },
             { id: 'kokurikuler', label: 'Nilai Kokurikuler', icon: 'sparkles' },
             { id: 'ekskul', label: 'Nilai Ekstrakurikuler', icon: 'trophy' },
             { id: '7kaih', label: '7KAIH & Sertifikat', icon: 'medal' }
@@ -1355,7 +1574,6 @@
       const daysInMonth = new Date(yr, mo + 1, 0).getDate();
       const agendaTerpilih = appData.kalenderAgenda.filter(a => a.tanggal === uiState.kalenderSelectedDate);
 
-      // Ringkasan interaktif tanggal yang dipilih di kalender
       const selDateObj = new Date(`${uiState.kalenderSelectedDate}T00:00:00`);
       const namaHariTerpilih = !isNaN(selDateObj.getTime())
         ? selDateObj.toLocaleDateString('id-ID', { weekday: 'long' })
@@ -1480,7 +1698,6 @@
                   <button type="button" onclick="openTambahAgendaModal()" class="px-3 py-1.5 rounded-xl bg-emerald-700 text-white text-xs font-bold shrink-0">+ Agenda</button>
                 </div>
 
-                <!-- Ringkasan Kehadiran Tanggal Terpilih -->
                 <div class="p-2.5 rounded-xl border border-emerald-100 bg-emerald-50/50 space-y-1.5">
                   <div class="flex items-center justify-between text-[11px]">
                     <span class="font-bold text-emerald-900">Ringkasan Kehadiran</span>
@@ -1494,7 +1711,6 @@
                   </div>
                 </div>
 
-                <!-- Agenda Pada Tanggal Terpilih -->
                 <div class="space-y-2">
                   <div class="text-[11px] font-bold text-slate-700">Agenda Kegiatan</div>
                   ${agendaTerpilih.length ? agendaTerpilih.map(a => `
@@ -2796,11 +3012,10 @@
       const taEl = document.getElementById('topbarTahunAjaran');
       const semEl = document.getElementById('topbarSemesterSelect');
       const orientEl = document.getElementById('topbarPrintOrientSelect');
-      const syncEl = document.getElementById('syncStatusText');
       if (taEl) taEl.textContent = appData.profil.tahunAjaran;
       if (semEl) semEl.value = appData.profil.semesterAktif;
       if (orientEl) orientEl.value = appData.printOrientation || 'portrait';
-      if (syncEl) syncEl.textContent = `Tersinkron (${appData.lastSyncTime || '23.15'})`;
+      updateSyncIndicator(uiState.syncState === 'idle' ? 'synced' : uiState.syncState);
 
       const container = document.getElementById('appContent');
       if (!container) return;
@@ -3085,27 +3300,64 @@
     }
 
     // ========================================================================
-    // 10. MODAL PENGATURAN URL & SINKRON GOOGLE APPS SCRIPT
+    // 10. MODAL PENGATURAN URL, MULTI-DEVICE AUTO-LOAD & SINKRON GAS
     // ========================================================================
     function closeModal() {
       const modal = document.getElementById('modalContainer');
       if (modal) modal.innerHTML = '';
     }
 
+    function buildShareDeviceLink() {
+      const url = (appData.gasUrl || '').trim();
+      if (!url) return '';
+      const base = window.location.href.split('?')[0];
+      return `${base}?gas=${encodeURIComponent(url)}`;
+    }
+
+    function copyShareDeviceLink() {
+      const link = buildShareDeviceLink();
+      if (!link) {
+        showToast('Simpan URL GAS terlebih dahulu.', 'warning');
+        return;
+      }
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(link).then(() => showToast('Tautan lintas perangkat berhasil disalin!'));
+      } else {
+        showToast('Salin tautan dari kotak tautan lintas perangkat.', 'warning');
+      }
+    }
+
     function openGasModal() {
       const modal = document.getElementById('modalContainer');
+      const shareLink = buildShareDeviceLink();
       modal.innerHTML = `
         <div class="fixed inset-0 z-50 bg-slate-900/60 flex items-center justify-center p-4">
           <div class="bg-white rounded-2xl max-w-md w-full p-5 space-y-4 shadow-xl">
             <div class="flex items-center justify-between">
-              <h3 class="font-heading font-extrabold text-base text-slate-900">Pengaturan URL Google Apps Script</h3>
+              <h3 class="font-heading font-extrabold text-base text-slate-900">Pengaturan URL &amp; Sinkron Lintas Perangkat</h3>
               <button type="button" onclick="closeModal()" class="p-1 text-slate-400 hover:text-slate-700"><i data-lucide="x" class="w-4 h-4"></i></button>
             </div>
-            <p class="text-xs text-slate-600">Masukkan URL Web App Google Apps Script untuk sinkronisasi dengan Google Spreadsheet.</p>
+            <p class="text-xs text-slate-600">Masukkan URL Web App Google Apps Script agar data terakhir otomatis dimuat saat membuka aplikasi di laptop, HP, atau perangkat lain.</p>
             <input type="url" id="inputGasUrl" value="${esc(appData.gasUrl)}" placeholder="https://script.google.com/macros/s/.../exec" class="w-full px-3 py-2 text-xs border border-slate-300 rounded-xl" />
-            <div class="flex justify-end gap-2">
-              <button type="button" onclick="closeModal()" class="px-4 py-2 rounded-xl border border-slate-300 text-xs font-bold">Batal</button>
-              <button type="button" onclick="appData.gasUrl = document.getElementById('inputGasUrl').value.trim(); closeModal(); saveAppData(); renderApp();" class="px-4 py-2 rounded-xl bg-emerald-700 text-white text-xs font-bold">Simpan URL</button>
+            <label class="flex items-center gap-2 text-xs font-bold text-slate-700 cursor-pointer">
+              <input type="checkbox" id="inputAutoSync" ${appData.autoSync !== false ? 'checked' : ''} class="rounded text-emerald-600" />
+              <span>Sinkronisasi otomatis setiap kali ada perubahan data</span>
+            </label>
+            ${shareLink ? `
+              <div class="p-3 rounded-xl border border-emerald-200 bg-emerald-50/70 space-y-1.5">
+                <div class="text-[11px] font-bold text-emerald-900">Tautan Cepat Perangkat Lain (HP / Laptop):</div>
+                <div class="flex gap-1.5">
+                  <input type="text" readonly value="${esc(shareLink)}" class="flex-1 px-2.5 py-1.5 text-[11px] bg-white border border-emerald-300 rounded-lg text-slate-700" />
+                  <button type="button" onclick="copyShareDeviceLink()" class="px-2.5 py-1.5 rounded-lg bg-emerald-700 text-white text-[11px] font-bold shrink-0">Salin</button>
+                </div>
+              </div>
+            ` : ''}
+            <div class="flex flex-wrap items-center justify-between gap-2 pt-1">
+              <button type="button" onclick="saveGasSettingsAndLoad()" class="px-3.5 py-2 rounded-xl border border-emerald-300 bg-emerald-50 hover:bg-emerald-100 text-emerald-900 text-xs font-bold">Muat Data Terakhir</button>
+              <div class="flex gap-2">
+                <button type="button" onclick="closeModal()" class="px-4 py-2 rounded-xl border border-slate-300 text-xs font-bold">Batal</button>
+                <button type="button" onclick="saveGasSettingsOnly()" class="px-4 py-2 rounded-xl bg-emerald-700 text-white text-xs font-bold">Simpan URL</button>
+              </div>
             </div>
           </div>
         </div>
@@ -3113,14 +3365,121 @@
       if (window.lucide) lucide.createIcons();
     }
 
-    async function syncToGas() {
+    function applyGasModalInputs() {
+      const urlEl = document.getElementById('inputGasUrl');
+      const autoEl = document.getElementById('inputAutoSync');
+      if (urlEl) appData.gasUrl = urlEl.value.trim();
+      if (autoEl) appData.autoSync = autoEl.checked;
+      if (appData.gasUrl) {
+        localStorage.setItem(GAS_URL_KEY, appData.gasUrl);
+      } else {
+        localStorage.removeItem(GAS_URL_KEY);
+      }
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(appData));
+    }
+
+    function saveGasSettingsOnly() {
+      applyGasModalInputs();
+      closeModal();
+      renderApp();
+      showToast('URL Google Apps Script disimpan.');
+      if (appData.gasUrl) loadFromGas(true);
+    }
+
+    function saveGasSettingsAndLoad() {
+      applyGasModalInputs();
+      loadFromGas(false);
+    }
+
+    async function loadFromGas(silent = false) {
+      const targetUrl = (appData.gasUrl || '').trim();
+      if (!targetUrl) {
+        if (!silent) {
+          openGasModal();
+          showToast('Isi URL Google Apps Script terlebih dahulu.', 'warning');
+        }
+        return;
+      }
+
+      try {
+        updateSyncIndicator('loading');
+        if (!silent) showToast('Mengambil data terakhir dari Spreadsheet...');
+        const sep = targetUrl.includes('?') ? '&' : '?';
+        const res = await fetch(`${targetUrl}${sep}action=load&t=${Date.now()}`);
+        const json = await res.json();
+
+        if (json.status === 'success' && json.payload) {
+          const remote = json.payload;
+          const localUpdatedAt = Number(appData.updatedAt) || 0;
+          const remoteUpdatedAt = Number(remote.updatedAt) || 0;
+
+          // Jika ada perubahan lokal yang belum tersinkron dan jelas lebih baru saat auto-load senyap, kirim lokal ke cloud
+          if (silent && localUpdatedAt > 0 && remoteUpdatedAt > 0 && localUpdatedAt > remoteUpdatedAt && localStorage.getItem(STORAGE_KEY)) {
+            updateSyncIndicator('synced');
+            syncToGas(true);
+            return;
+          }
+
+          const mergedLogos = {
+            logoDinas: appData.logos?.logoDinas || '',
+            logoSekolah: appData.logos?.logoSekolah || '',
+            ...(remote.logos || {})
+          };
+          if (!mergedLogos.logoDinas && appData.logos?.logoDinas) mergedLogos.logoDinas = appData.logos.logoDinas;
+          if (!mergedLogos.logoSekolah && appData.logos?.logoSekolah) mergedLogos.logoSekolah = appData.logos.logoSekolah;
+
+          appData = {
+            ...JSON.parse(JSON.stringify(DEFAULT_APP_DATA)),
+            ...remote,
+            gasUrl: targetUrl,
+            autoSync: appData.autoSync !== false,
+            logos: mergedLogos,
+            profil: { ...DEFAULT_APP_DATA.profil, ...(remote.profil || {}) },
+            bobotNilai: { ...DEFAULT_APP_DATA.bobotNilai, ...(remote.bobotNilai || {}) }
+          };
+
+          const now = new Date();
+          appData.lastSyncTime = `${String(now.getHours()).padStart(2, '0')}.${String(now.getMinutes()).padStart(2, '0')}`;
+          localStorage.setItem(GAS_URL_KEY, targetUrl);
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(appData));
+
+          if (!appData.siswa.some(s => s.id === uiState.selectedRaporSiswaId) && appData.siswa.length) {
+            uiState.selectedRaporSiswaId = appData.siswa[0].id;
+          }
+          if (!appData.siswa.some(s => s.id === uiState.selected7KaihSiswaId) && appData.siswa.length) {
+            uiState.selected7KaihSiswaId = appData.siswa[0].id;
+          }
+
+          updateSyncIndicator('synced');
+          renderApp();
+          if (!silent) {
+            closeModal();
+            showToast('Data terakhir berhasil dimuat dari Spreadsheet!');
+          }
+        } else {
+          updateSyncIndicator('synced');
+          if (!silent) {
+            showToast(json.message || 'Belum ada data cadangan di Spreadsheet.', 'warning');
+          }
+        }
+      } catch (err) {
+        updateSyncIndicator('offline', 'Mode Lokal');
+        if (!silent) showToast('Gagal memuat data dari Google Apps Script.', 'error');
+      }
+    }
+
+    async function syncToGas(silent = false) {
       if (!appData.gasUrl) {
-        openGasModal();
-        showToast('Isi URL Google Apps Script terlebih dahulu.', 'warning');
+        if (!silent) {
+          openGasModal();
+          showToast('Isi URL Google Apps Script terlebih dahulu.', 'warning');
+        }
         return;
       }
       try {
-        showToast('Menyinkronkan data ke Spreadsheet...');
+        updateSyncIndicator('syncing');
+        if (!silent) showToast('Menyinkronkan data ke Spreadsheet...');
+        appData.updatedAt = Date.now();
         const payload = { ...appData, logos: { logoDinas: '', logoSekolah: '' } };
         const res = await fetch(appData.gasUrl, {
           method: 'POST',
@@ -3131,20 +3490,26 @@
         if (json.status === 'success') {
           const now = new Date();
           appData.lastSyncTime = `${String(now.getHours()).padStart(2, '0')}.${String(now.getMinutes()).padStart(2, '0')}`;
-          saveAppData(true);
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(appData));
+          updateSyncIndicator('synced');
           renderApp();
-          showToast('Sinkronisasi Spreadsheet berhasil!');
+          if (!silent) showToast('Sinkronisasi Spreadsheet berhasil!');
         } else {
-          showToast(json.message || 'Gagal sinkronisasi.', 'error');
+          updateSyncIndicator('offline', 'Gagal Sinkron');
+          if (!silent) showToast(json.message || 'Gagal sinkronisasi.', 'error');
         }
       } catch (err) {
-        showToast('Gagal terhubung ke URL Google Apps Script.', 'error');
+        updateSyncIndicator('offline', 'Gagal Terhubung');
+        if (!silent) showToast('Gagal terhubung ke URL Google Apps Script.', 'error');
       }
     }
 
     window.addEventListener('DOMContentLoaded', () => {
       setPrintOrientation(appData.printOrientation || 'portrait');
       renderApp();
+      if ((appData.gasUrl || '').trim()) {
+        loadFromGas(true);
+      }
     });
   </script>
 </body>
